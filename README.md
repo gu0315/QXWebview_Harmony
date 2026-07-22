@@ -18,11 +18,6 @@ Android `qx_hybrid`(`com.energy.sdk:qx-hybrid`)的**纯血鸿蒙(HarmonyOS NEXT 
 
 详见 [`BRIDGE_PROTOCOL.md`](./BRIDGE_PROTOCOL.md)。
 
-> ✅ **已与线上生产 H5 核对**(`https://fr-home-charge-web.cheryge.com`,uni-app):其内置的 `window.JDBridge` 调用 `window.XWebView._callNative(...)`、报文 `{plugin, action, params, callbackId}`、蓝牙插件名 `QXBlePlugin` 及 14 个 action —— **与本 SDK 逐字节一致**。
-> 逆向还确认了两条必须遵守的 BLE 契约,已在 `QXBlePlugin.ets` 落地:
-> 1. BLE 响应包 `{code, message, data}` 信封(`code:0` 成功 / `10000-10013` 失败);
-> 2. `onBluetoothDeviceFound` / `onBLEConnectionStateChange` / `onBLECharacteristicValueChange` 三个事件经 `callJS('QXBlePlugin', {eventName, ...})` 推送(不是 action 回调)。详见协议文档 §4。H5 同学的逐 action 自测清单见 [`H5_SELFTEST.md`](./H5_SELFTEST.md)。
-
 ## 目录结构
 
 ```
@@ -116,5 +111,3 @@ struct ChargePage {
 - **BLE 全链路**:模拟器无蓝牙。连接/GATT 读写/notify 的 `writeType`、MTU、UUID 大小写等需在纯血真机 + 桩上校准;连接状态变化经 `onBLEConnectionStateChange` 事件回 H5。
 - **扫码 / 选图 / 下载打开文件**:已用 Scan Kit / PhotoViewPicker / NetworkKit 实现,依赖相机与相册,需真机运行验证。
 - **openSetting / openMap 的 Want**:系统设置页 `bundleName`、地图 scheme 以真机为准。
-
-> ⚠️ 本工程代码在无 DevEco 环境下编写,类型与 API 调用按官方文档对齐,但**尚未经过编译器与真机验证**。首次导入 DevEco 后请以 `Build` 报错为准逐个修正(主要集中在 🟡 项)。
