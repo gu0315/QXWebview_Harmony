@@ -1,0 +1,34 @@
+{
+  "module": {
+    "name": "qx_hybrid",
+    "type": "har",
+    "deviceTypes": [
+      "phone",
+      "tablet"
+    ],
+    "requestPermissions": [
+      { "name": "ohos.permission.INTERNET" },
+      { "name": "ohos.permission.GET_NETWORK_INFO" },
+      {
+        "name": "ohos.permission.APPROXIMATELY_LOCATION",
+        "reason": "$string:reason_location",
+        "usedScene": { "when": "inuse" }
+      },
+      {
+        "name": "ohos.permission.LOCATION",
+        "reason": "$string:reason_location",
+        "usedScene": { "when": "inuse" }
+      },
+      {
+        "name": "ohos.permission.ACCESS_BLUETOOTH",
+        "reason": "$string:reason_bluetooth",
+        "usedScene": { "when": "inuse" }
+      },
+      {
+        "name": "ohos.permission.CAMERA",
+        "reason": "$string:reason_camera",
+        "usedScene": { "when": "inuse" }
+      }
+    ]
+  }
+}

@@ -1,0 +1,62 @@
+{
+  "app": {
+    "signingConfigs": [
+      {
+        "name": "default",
+        "type": "HarmonyOS",
+        "material": {
+          "storeFile": "/Users/guqianxiang/Desktop/chery/App/chery_harmony/fr.p12",
+          "storePassword": "000000181958D66FA84543737508B2F267BE4D6CBC3D99A34CD8E028C388EC567166494B42516973",
+          "keyAlias": "fr",
+          "keyPassword": "000000182332589F69B4D0F9C213EE391C36E9DF034674A565FD89044B4E37FB78B66231D48B5F85",
+          "signAlg": "SHA256withECDSA",
+          "profile": "/Users/guqianxiang/Downloads/chery-releaseRelease.p7b",
+          "certpath": "/Users/guqianxiang/Downloads/chery-release.cer"
+        }
+      }
+    ],
+    "products": [
+      {
+        "name": "default",
+        "signingConfig": "default",
+        "compatibleSdkVersion": "5.0.0(12)",
+        "runtimeOS": "HarmonyOS",
+        "targetSdkVersion": "5.0.0(12)"
+      }
+    ],
+    "buildModeSet": [
+      {
+        "name": "debug"
+      },
+      {
+        "name": "release"
+      }
+    ]
+  },
+  "modules": [
+    {
+      "name": "qx_hybrid",
+      "srcPath": "./qx_hybrid",
+      "targets": [
+        {
+          "name": "default",
+          "applyToProducts": [
+            "default"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "entry",
+      "srcPath": "./entry",
+      "targets": [
+        {
+          "name": "default",
+          "applyToProducts": [
+            "default"
+          ]
+        }
+      ]
+    }
+  ]
+}

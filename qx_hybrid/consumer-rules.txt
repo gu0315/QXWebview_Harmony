@@ -1,0 +1,7 @@
+# 对外混淆规则(集成方生效)。对应 Android 的 consumer-rules.pro。
+# 桥协议注入名与插件类名不可混淆,否则 H5 侧调用失败。
+-keep-property-name
+XWebView
+_callNative
+_handleRequestFromNative
+_handleResponseFromNative

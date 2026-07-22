@@ -1,0 +1,10 @@
+{
+  "modelVersion": "5.0.0",
+  "name": "qx-hybrid",
+  "version": "0.1.10",
+  "description": "QX Hybrid Android SDK 的鸿蒙原生实现(HAR)。对外发布到 OHPM 私有源,供集成方在 oh-package.json5 中引用。",
+  "main": "Index.ets",
+  "author": "energy",
+  "license": "MIT",
+  "dependencies": {}
+}

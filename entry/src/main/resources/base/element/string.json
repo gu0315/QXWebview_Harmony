@@ -1,0 +1,10 @@
+{
+  "string": [
+    { "name": "module_desc", "value": "qx-hybrid 演示模块" },
+    { "name": "EntryAbility_desc", "value": "qx-hybrid demo" },
+    { "name": "EntryAbility_label", "value": "QX Hybrid Demo" },
+    { "name": "reason_location", "value": "用于获取当前位置、地图导航等功能" },
+    { "name": "reason_bluetooth", "value": "用于连接充电桩等蓝牙设备" },
+    { "name": "reason_camera", "value": "用于扫描二维码" }
+  ]
+}

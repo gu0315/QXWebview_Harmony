@@ -1,0 +1,12 @@
+{
+  "modelVersion": "5.0.0",
+  "name": "entry",
+  "version": "1.0.0",
+  "description": "演示 App:在鸿蒙模拟器中加载 H5 并验证桥。",
+  "main": "",
+  "author": "energy",
+  "license": "MIT",
+  "dependencies": {
+    "qx-hybrid": "file:../qx_hybrid"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "modelVersion": "5.0.0",
+  "name": "chery_harmony",
+  "version": "0.1.10",
+  "description": "QX Hybrid HarmonyOS SDK - 鸿蒙原生版混合开发 SDK,与 Android qx_hybrid(com.energy.sdk:qx-hybrid)桥协议对齐",
+  "main": "",
+  "author": "energy",
+  "license": "MIT",
+  "dependencies": {},
+  "devDependencies": {
+    "@ohos/hypium": "1.0.21"
+  }
+}
