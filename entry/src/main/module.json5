@@ -14,7 +14,10 @@
       "petalmaps",
       "amapuri",
       "baidumap",
-      "qqmap"
+      "qqmap",
+      // H5 跳转 weixin://(唤起微信/小程序)。startAbility 唤起本身不需要声明,
+      // 声明后才能用 canOpenLink 判断微信是否已安装。
+      "weixin"
     ],
     "deliveryWithInstall": true,
     "installationFree": false,

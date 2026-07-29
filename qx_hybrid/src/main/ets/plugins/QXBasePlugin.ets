@@ -33,11 +33,24 @@ interface StorageKV {
 }
 
 interface LocationResult {
-  latitude: number;
-  longitude: number;
-  wgsLatitude: number;
+  latitude: number;        // GCJ-02
+  longitude: number;       // GCJ-02
+  wgsLatitude: number;     // 原始 WGS-84
   wgsLongitude: number;
   accuracy: number;
+  altitude: number;
+  speed: number;
+  timestamp: string;
+  geopoint: string;        // "lat,lng"(GCJ-02)
+  gcoord: string;          // 坐标系标识
+  hasPermission: boolean;  // H5 靠此判断是否有定位权限
+  isEnable: boolean;       // 定位服务是否开启
+  locationType: string;
+  state: string;           // 省(adminArea)
+  city: string;            // 市
+  district: string;        // 区
+  street: string;
+  streetNum: string;
 }
 
 /** closeWithResult 无结果时的占位空对象。 */
@@ -80,7 +93,7 @@ export class QXBasePlugin extends BasePlugin {
         return true;
 
       case 'location':
-        this.handleLocation(callback);
+        this.handleLocation(params, callback);
         return true;
 
       case 'setStorage':
@@ -161,7 +174,9 @@ export class QXBasePlugin extends BasePlugin {
   }
 
   // ---------------- 定位 ----------------
-  private handleLocation(callback: BridgeCallback): void {
+  // needAddress 三态(对齐 Android):不传 -> 省/市/区;true -> 完整地址含街道;false -> 仅坐标。
+  private handleLocation(params: object | undefined, callback: BridgeCallback): void {
+    const needAddress: boolean | undefined = this.bool(params, 'needAddress');
     try {
       const request: geoLocationManager.SingleLocationRequest = {
         locatingPriority: geoLocationManager.LocatingPriority.PRIORITY_ACCURACY,
@@ -175,15 +190,64 @@ export class QXBasePlugin extends BasePlugin {
           longitude: gcj.longitude,
           wgsLatitude: loc.latitude,
           wgsLongitude: loc.longitude,
-          accuracy: loc.accuracy
+          accuracy: loc.accuracy,
+          altitude: loc.altitude,
+          speed: loc.speed,
+          timestamp: `${loc.timeStamp}`,
+          geopoint: `${gcj.latitude},${gcj.longitude}`,
+          gcoord: 'GCJ02',
+          hasPermission: true,
+          isEnable: true,
+          locationType: 'new',
+          state: '',
+          city: '',
+          district: '',
+          street: '',
+          streetNum: ''
         };
-        callback.onSuccess(result);
+        // needAddress===false:仅坐标,直接返回。
+        if (needAddress === false) {
+          callback.onSuccess(result);
+          return;
+        }
+        // 否则逆地理编码补省市区(needAddress===true 再补街道)。失败也返回坐标。
+        this.fillAddress(loc.latitude, loc.longitude, needAddress === true, result, callback);
       }).catch((e: BusinessError) => {
         callback.onError(`定位失败: ${e.message}`);
       });
     } catch (err) {
       const e: BusinessError = err as BusinessError;
       callback.onError(`定位异常: ${e.message}`);
+    }
+  }
+
+  /** 逆地理编码补充省/市/区(和可选街道)。任何失败都不阻断,仍返回带坐标的结果。 */
+  private fillAddress(lat: number, lng: number, includeStreet: boolean,
+    result: LocationResult, callback: BridgeCallback): void {
+    try {
+      const req: geoLocationManager.ReverseGeoCodeRequest = {
+        latitude: lat,
+        longitude: lng,
+        maxItems: 1
+      };
+      geoLocationManager.getAddressesFromLocation(req).then((addrs: Array<geoLocationManager.GeoAddress>) => {
+        if (addrs.length > 0) {
+          const a: geoLocationManager.GeoAddress = addrs[0];
+          result.state = a.administrativeArea ?? '';
+          result.city = a.locality ?? a.subAdministrativeArea ?? '';
+          result.district = a.subLocality ?? '';
+          if (includeStreet) {
+            result.street = a.roadName ?? a.placeName ?? '';
+            result.streetNum = a.subRoadName ?? '';
+          }
+        }
+        callback.onSuccess(result);
+      }).catch((e: BusinessError) => {
+        // 逆编码失败(如模拟器无地理编码服务):仍返回坐标,省市区为空。
+        callback.onSuccess(result);
+      });
+    } catch (err) {
+      callback.onSuccess(result);
     }
   }
 

@@ -12,7 +12,8 @@
  */
 
 import { webview } from '@kit.ArkWeb';
-import { common, abilityAccessCtrl, Permissions } from '@kit.AbilityKit';
+import { common, abilityAccessCtrl, Permissions, Want } from '@kit.AbilityKit';
+import { BusinessError } from '@kit.BasicServicesKit';
 import { JDBridge } from '../bridge/JDBridge';
 import { BridgeHost, BridgeCallback } from '../bridge/BridgeTypes';
 import { QXHostDelegate, QXHostBridgeDelegate } from '../bridge/HostDelegate';
@@ -66,9 +67,11 @@ export struct QXWebView {
   private bridge: JDBridge | null = null;
   private lifecyclePlugin: QXLifecyclePlugin = new QXLifecyclePlugin();
   private storage: StorageUtil = new StorageUtil();
+  private abilityContext: common.UIAbilityContext | null = null;
 
   aboutToAppear(): void {
     const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    this.abilityContext = context;
 
     // 运行时申请 user_grant 权限(定位/蓝牙/相机)。HAR 声明的权限不会自动生效,
     // 必须在运行时向用户申请,否则 H5 调 location/BLE/扫码会失败。
@@ -129,8 +132,75 @@ export struct QXWebView {
     this.bridge?.destroy();
   }
 
+  /**
+   * 拦截非 http/https 跳转。Web 组件只认 http(s),H5 直接 location.href 到 weixin://
+   * 这类三方 scheme 会加载失败,必须在这里转成 startAbility 唤起。
+   * 返回 true 表示本次加载已被拦截,Web 组件不再处理。
+   */
+  private handleUrlLoad(url: string): boolean {
+    if (!url) {
+      return false;
+    }
+    const lower: string = url.toLowerCase();
+    if (lower.startsWith('http://') || lower.startsWith('https://') ||
+      lower.startsWith('about:') || lower.startsWith('data:') ||
+      lower.startsWith('blob:') || lower.startsWith('javascript:')) {
+      return false;
+    }
+    // intent:// 是 Android 专有写法,鸿蒙不识别,先还原成三方 scheme。
+    const target: string = lower.startsWith('intent://') ? this.convertIntentUri(url) : url;
+    const targetLower: string = target.toLowerCase();
+    // 还原结果是 browser_fallback_url 这类网页地址时,交回 Web 组件加载。
+    if (targetLower.startsWith('http://') || targetLower.startsWith('https://')) {
+      // 避免在拦截回调里同步重入 controller,放到下一个事件循环再加载。
+      setTimeout(() => {
+        try {
+          this.controller.loadUrl(target);
+        } catch (e) {
+          console.error(`QXWebView 加载回退地址失败: ${target}`);
+        }
+      }, 0);
+      return true;
+    }
+    const want: Want = { action: 'ohos.want.action.viewData', uri: target };
+    this.abilityContext?.startAbility(want).catch((e: BusinessError) => {
+      console.error(`QXWebView 唤起外部应用失败: ${target}, ${e.message}`);
+    });
+    return true;
+  }
+
+  /**
+   * intent://host/path?query#Intent;scheme=weixin;package=com.tencent.mm;end
+   *   → weixin://host/path?query
+   * 取不到 scheme 时退回 S.browser_fallback_url,再取不到则返回原串。
+   */
+  private convertIntentUri(url: string): string {
+    const markIndex: number = url.toLowerCase().indexOf('#intent;');
+    if (markIndex < 0) {
+      return url;
+    }
+    const body: string = url.substring('intent://'.length, markIndex);
+    const extras: string[] = url.substring(markIndex + '#intent;'.length).split(';');
+    let scheme: string = '';
+    let fallback: string = '';
+    for (const item of extras) {
+      if (item.startsWith('scheme=')) {
+        scheme = item.substring('scheme='.length);
+      } else if (item.startsWith('S.browser_fallback_url=')) {
+        fallback = decodeURIComponent(item.substring('S.browser_fallback_url='.length));
+      }
+    }
+    if (scheme.length > 0) {
+      return `${scheme}://${body}`;
+    }
+    return fallback.length > 0 ? fallback : url;
+  }
+
   build() {
     Web({ src: this.url, controller: this.controller })
+      .onLoadIntercept((event: OnLoadInterceptEvent) => {
+        return this.handleUrlLoad(event.data.getRequestUrl());
+      })
       .javaScriptAccess(true)
       .domStorageAccess(true)
       .fileAccess(true)

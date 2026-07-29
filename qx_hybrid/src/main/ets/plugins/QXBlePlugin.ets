@@ -19,7 +19,11 @@ import { BridgeCallback, BridgeHost } from '../bridge/BridgeTypes';
 import { access, ble } from '@kit.ConnectivityKit';
 import { abilityAccessCtrl, common, Permissions, PermissionRequestResult } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { decodeToBytes, encodeFromBytes, BleFormat } from '../utils/BleDataParser';
+
+const BLE_DOMAIN: number = 0x00B1;
+const BLE_TAG: string = 'QXBlePlugin';
 
 interface FoundDevice {
   deviceId: string;
@@ -109,30 +113,48 @@ export class QXBlePlugin extends BasePlugin {
   private found: Map<string, FoundDevice> = new Map();
   private gattClients: Map<string, ble.GattClientDevice> = new Map();
 
+  /** 调试日志开关。默认关(不刷屏);需要排查时改成 true,日志会同时打到 hilog 和 H5 vConsole。 */
+  private static readonly DEBUG: boolean = false;
+
   constructor(context: common.UIAbilityContext) {
     super();
     this.context = context;
   }
 
+  /**
+   * 调试日志。DEBUG=true 时同时打到原生 hilog 和 H5 的 console(vConsole 按 "[QXBle]" 过滤)。
+   * DEBUG=false 时为空操作,不产生任何输出。
+   */
+  private log(msg: string): void {
+    if (QXBlePlugin.DEBUG) {
+      hilog.info(BLE_DOMAIN, BLE_TAG, '%{public}s', msg);
+      this.bridge?.runJavaScript(`console.log(${JSON.stringify('[QXBle] ' + msg)})`);
+    }
+  }
+
   // ---- 统一信封回调(对齐 Android)。成功:{code:0,message:'ok',data};失败:onError(JSON 信封) ----
   private ok(callback: BridgeCallback, data?: Object): void {
     const env: BleEnvelope = { code: 0, message: 'ok', data: data ?? EMPTY_DATA };
+    this.log(`↩ 成功回包 ${JSON.stringify(env)}`);
     callback.onSuccess(env);
   }
 
   private fail(callback: BridgeCallback, code: number, message: string): void {
     const env: BleEnvelope = { code: code, message: message, data: EMPTY_DATA };
+    this.log(`↩ 失败回包 ${JSON.stringify(env)}`);
     callback.onError(JSON.stringify(env));
   }
 
   // ---- 事件推送:经 callJS('QXBlePlugin', {eventName, ...}) 下发,H5 侧 registerPlugin 接收 ----
   private pushEvent(payload: Object): void {
+    this.log(`⇢ 事件 ${JSON.stringify(payload)}`);
     this.bridge?.callJS(QXBlePlugin.NAME, payload);
   }
 
   execute(host: BridgeHost, action: string | undefined,
     params: object | undefined, callback: BridgeCallback): boolean {
     this.bridge = host;
+    this.log(`▶ execute action=${action} params=${JSON.stringify(params)}`);
     switch (action) {
       case 'checkBluetoothPermission':
         this.checkPermission(callback);
@@ -216,13 +238,22 @@ export class QXBlePlugin extends BasePlugin {
   private openAdapter(callback: BridgeCallback): void {
     try {
       const state: access.BluetoothState = access.getState();
+      this.log(`openBluetoothAdapter 当前状态=${state}(2=STATE_ON)`);
       if (state === access.BluetoothState.STATE_ON) {
         const r: AdapterStateResult = { available: true, discovering: this.scanning };
         this.ok(callback, r);
         return;
       }
-      access.enableBluetooth();
-      const r: AdapterStateResult = { available: true, discovering: false };
+      // 蓝牙未开:尝试开启(部分设备不允许应用直接开启,会抛异常)。
+      try {
+        access.enableBluetooth();
+        this.log('enableBluetooth() 已调用');
+      } catch (e2) {
+        this.log(`enableBluetooth() 抛异常(设备可能需手动开蓝牙): ${(e2 as BusinessError).message}`);
+      }
+      // 重新读一次状态(enableBluetooth 是异步的,此刻多半还没 ON)。
+      const nowState: access.BluetoothState = access.getState();
+      const r: AdapterStateResult = { available: nowState === access.BluetoothState.STATE_ON, discovering: false };
       this.ok(callback, r);
     } catch (err) {
       this.fail(callback, 10001, `打开蓝牙失败: ${(err as BusinessError).message}`);
@@ -255,19 +286,30 @@ export class QXBlePlugin extends BasePlugin {
   // ---------------- 扫描 ----------------
   private startDiscovery(callback: BridgeCallback): void {
     if (this.scanning) {
+      this.log('startDiscovery: 已在扫描中,直接返回成功');
       this.ok(callback);
       return;
     }
     try {
+      // 新一轮扫描:清空上一轮结果,让设备能重新被上报(配合去重)。
+      this.found.clear();
+      const adapterState: access.BluetoothState = access.getState();
+      this.log(`startDiscovery: 适配器状态=${adapterState}(2=STATE_ON)`);
+
       ble.on('BLEDeviceFind', (devices: Array<ble.ScanResult>) => {
         devices.forEach((d: ble.ScanResult) => {
+          // 去重:同一台设备只上报一次(对齐 Android,避免 aggressive 模式重复刷屏)。
+          if (this.found.has(d.deviceId)) {
+            return;
+          }
           const dev: FoundDevice = {
             deviceId: d.deviceId,
             name: d.deviceName ?? '',
             rssi: d.rssi
           };
           this.found.set(d.deviceId, dev);
-          // 每发现一台设备,推送 onBluetoothDeviceFound 事件(字段对齐 Android)。
+          this.log(`发现新设备 id=${dev.deviceId} name=${dev.name} rssi=${dev.rssi}`);
+          // 推送 onBluetoothDeviceFound 事件(字段对齐 Android)。
           const ev: DeviceFoundEvent = {
             eventName: 'onBluetoothDeviceFound',
             name: dev.name,
@@ -277,11 +319,20 @@ export class QXBlePlugin extends BasePlugin {
           this.pushEvent(ev);
         });
       });
-      ble.startBLEScan(null);
+      // 用低时延 + 主动匹配,尽量快地扫到充电桩。filters=null 表示不过滤,扫描全部 BLE 设备。
+      const options: ble.ScanOptions = {
+        interval: 0,
+        dutyMode: ble.ScanDuty.SCAN_MODE_LOW_LATENCY,
+        matchMode: ble.MatchMode.MATCH_MODE_AGGRESSIVE
+      };
+      ble.startBLEScan(null, options);
+      this.log('ble.startBLEScan 已调用(等待 BLEDeviceFind 回调)');
       this.scanning = true;
       this.ok(callback);
     } catch (err) {
-      this.fail(callback, 10001, `启动扫描失败: ${(err as BusinessError).message}`);
+      const e: BusinessError = err as BusinessError;
+      this.log(`❌ startBLEScan 抛异常 code=${e.code} msg=${e.message}`);
+      this.fail(callback, 10001, `启动扫描失败: code=${e.code} ${e.message}`);
     }
   }
 
