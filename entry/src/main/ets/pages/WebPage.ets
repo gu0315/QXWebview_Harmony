@@ -4,7 +4,8 @@
  */
 
 import { router } from '@kit.ArkUI';
-import { QXWebView, QXHostDelegate, OpenWebViewOptions, NavigationBarStyle,
+import { QXWebView, QXWebViewController, QXHostDelegate, OpenWebViewOptions, QXNavigationBarStyle,
+  navigationBarStyleJsValue,
   QXHostBridgeDelegate, HostMethodResolve, HostMethodReject } from 'qx-hybrid';
 import { FRConfirmPayResultCenter } from '../common/FRConfirmPayResultCenter';
 
@@ -14,6 +15,8 @@ interface LaunchParams {
   vin: string;
   mac: string;
   token: string;
+  /** openWebView({forResult:true}) 生成的回传 id,原样交给新页的 QXWebView.pageId。 */
+  pageId?: string;
 }
 
 interface CarItem {
@@ -65,34 +68,35 @@ class DemoHostDelegate implements QXHostDelegate {
     this.session = session;
   }
 
-  onGoBack(): void {
-    router.back();
-  }
-
   onCloseWebView(): void {
     router.back();
   }
 
-  onCloseWithResult(result: object): void {
+  onCloseWithResult(result: Object): void {
     console.info('closeWithResult: ' + JSON.stringify(result));
     router.back();
   }
 
   onOpenWebView(options: OpenWebViewOptions): void {
-    // options 只有 { url, title, extra },不含用户信息;
-    // 这里补上当前页的 phone/vin/mac/token,保证新开的 WebPage 仍是已登录态。
+    // options 不含用户信息;这里补上当前页的 phone/vin/mac/token,保证新开的 WebPage 仍是已登录态。
+    // forResult=true 时必须把 pageId 透传下去,新页 closeWithResult 才能回传给打开方。
     const next: LaunchParams = {
       url: options.url,
       phone: this.session.phone,
       vin: this.session.vin,
       mac: this.session.mac,
-      token: this.session.token
+      token: this.session.token,
+      pageId: options.forResult ? options.pageId : undefined
     };
     router.pushUrl({ url: 'pages/WebPage', params: next });
   }
 
-  onSetNavigationBarStyle(style: NavigationBarStyle): void {
-    console.info('setNavigationBarStyle: ' + JSON.stringify(style));
+  onSetNavigationBarStyle(style: QXNavigationBarStyle): void {
+    console.info('setNavigationBarStyle: ' + navigationBarStyleJsValue(style));
+  }
+
+  onFirstRender(): void {
+    console.info('H5 首屏渲染完成');
   }
 }
 
@@ -194,8 +198,19 @@ class DemoHostBridgeDelegate implements QXHostBridgeDelegate {
 @Component
 struct WebPage {
   @State targetUrl: string = '';
+  @State pageId: string = '';
   private delegate: DemoHostDelegate = new DemoHostDelegate({ url: '', phone: '', vin: '', mac: '', token: '' });
   private hostBridgeDelegate: DemoHostBridgeDelegate = new DemoHostBridgeDelegate('', '', '', '');
+  /** 把本页(@Entry)的显示/隐藏转给 QXWebView,H5 才能收到 pageShow/pageHide 生命周期事件。 */
+  private webController: QXWebViewController = new QXWebViewController();
+
+  onPageShow(): void {
+    this.webController.onPageShow();
+  }
+
+  onPageHide(): void {
+    this.webController.onPageHide();
+  }
 
   aboutToAppear(): void {
     const p: LaunchParams = router.getParams() as LaunchParams;
@@ -206,9 +221,11 @@ struct WebPage {
         phone: toStr(p.phone),
         vin: toStr(p.vin),
         mac: toStr(p.mac),
-        token: toStr(p.token)
+        token: toStr(p.token),
+        pageId: toStr(p.pageId)
       };
       this.targetUrl = session.url;
+      this.pageId = session.pageId ?? '';
       this.delegate = new DemoHostDelegate(session);
       this.hostBridgeDelegate =
         new DemoHostBridgeDelegate(session.phone, session.vin, session.mac, session.token);
@@ -220,10 +237,14 @@ struct WebPage {
       QXWebView({
         url: this.targetUrl,
         delegate: this.delegate,
-        hostBridgeDelegate: this.hostBridgeDelegate
+        hostBridgeDelegate: this.hostBridgeDelegate,
+        pageId: this.pageId.length > 0 ? this.pageId : undefined,
+        webController: this.webController
       })
     }
     .width('100%')
     .height('100%')
+    // 沉浸式:让 Web 内容区顶到状态栏下,状态栏占位交给 H5 的 HeaderNavBar 自己垫。
+    .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
   }
 }

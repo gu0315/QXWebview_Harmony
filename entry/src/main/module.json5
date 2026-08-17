@@ -12,7 +12,8 @@
     // 集成方需在自己的入口模块声明相同 querySchemes。
     "querySchemes": [
       "petalmaps",
-      "amapuri",
+      // 高德用 androidamap://navi(与 Android OpenMapAppUtils 同一套 URI)
+      "androidamap",
       "baidumap",
       "qqmap",
       // H5 跳转 weixin://(唤起微信/小程序)。startAbility 唤起本身不需要声明,

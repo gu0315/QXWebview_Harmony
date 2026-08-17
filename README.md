@@ -73,18 +73,29 @@ ohpm publish qx_hybrid/build/default/outputs/default/qx-hybrid.har
 }
 ```
 
-> 若用到 `openMap` 唤起第三方地图,集成方需在自己入口模块的 `module.json5` 声明 `querySchemes: ["petalmaps","amapuri","baidumap","qqmap"]`(参考 `entry` 模块)。
+> 若用到 `openMap` 唤起第三方地图,集成方需在自己入口模块的 `module.json5` 声明 `querySchemes: ["petalmaps","androidamap","baidumap","qqmap"]`(参考 `entry` 模块)。
 
 页面中:
 
 ```typescript
-import { QXWebView, QXHostDelegate } from 'qx-hybrid';
+import { QXWebView, QXWebViewController, QXHostDelegate } from 'qx-hybrid';
 
 @Entry
 @Component
 struct ChargePage {
+  // onPageShow/onPageHide 只在 @Entry 上触发,需经 controller 转给 QXWebView,
+  // H5 才能收到 pageShow / pageHide 生命周期事件。
+  private webController: QXWebViewController = new QXWebViewController();
+
+  onPageShow(): void { this.webController.onPageShow(); }
+  onPageHide(): void { this.webController.onPageHide(); }
+
   build() {
-    QXWebView({ url: 'https://your-h5/index.html', delegate: myDelegate })
+    QXWebView({
+      url: 'https://your-h5/index.html',
+      delegate: myDelegate,
+      webController: this.webController
+    })
   }
 }
 ```
@@ -100,11 +111,14 @@ struct ChargePage {
 | QXBasePlugin | scanQRCode | ✅ 已实现(真机) | Scan Kit `startScanForResult`;可用 scanHandler 覆盖 |
 | QXBasePlugin | chooseImage | ✅ 已实现(真机) | PhotoViewPicker;可用 chooseImageHandler 覆盖 |
 | QXBasePlugin | downloadAndOpenFile | ✅ 已实现(真机) | NetworkKit 下载 + startAbility 打开 |
-| QXBasePlugin | openMap | ✅ 已实现 | 高德/百度/腾讯/华为 Petal scheme + geo: 回退;需集成方声明 querySchemes |
+| QXBasePlugin | openMap | ✅ 已实现 | URI 与 Android OpenMapAppUtils 逐字对齐;未装则走网页版;需集成方声明 querySchemes |
 | QXBlePlugin | 权限 / 适配器状态 / 扫描 | ✅ 已实现 | 真机验证 |
 | QXBlePlugin | 连接 / 服务 / 特征 / 写 / notify / MTU | 🟡 已按官方 API 接线 | **必须真机 + 充电桩联调**;连接状态经 `onBLEConnectionStateChange` 事件广播 |
-| QXLifecyclePlugin | subscribe / unsubscribe / getPageLifecycleState | ✅ | onPageLifecycle 事件 |
+| QXHostBridgePlugin | openPage / 宿主自定义方法 | ✅ | 转 QXHostBridgeDelegate,回裸数据 |
+| QXLifecyclePlugin | subscribePageLifecycle / unsubscribePageLifecycle / getPageLifecycleState | ✅ | 事件走 callJS;承载页需转调 `QXWebViewController` |
 | SystemInfoPlugin | getSystemInfo / getDeviceInfo | ✅ | |
+
+> 所有 action 的入参名、返回结构、错误码均以 Android `qx_hybrid` 为准,详见 [BRIDGE_PROTOCOL.md](BRIDGE_PROTOCOL.md)。
 
 ## 已知需真机验证的点
 

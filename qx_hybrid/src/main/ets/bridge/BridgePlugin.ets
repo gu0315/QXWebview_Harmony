@@ -57,4 +57,81 @@ export abstract class BasePlugin implements IBridgePlugin {
     const v: object | undefined = (params as Record<string, object>)[key];
     return typeof v === 'boolean' ? v as boolean : undefined;
   }
+
+  /** 从 params 中原样读取任意类型字段(对象/数组/数字/字符串…)。 */
+  protected raw(params: object | undefined, key: string): Object | undefined {
+    if (!params) {
+      return undefined;
+    }
+    const v: Object | undefined = (params as Record<string, Object>)[key];
+    return v === null ? undefined : v;
+  }
+
+  /** 从 params 中读取对象字段(如 query / params 子对象)。 */
+  protected obj(params: object | undefined, key: string): object | undefined {
+    const v: Object | undefined = this.raw(params, key);
+    return (v !== undefined && typeof v === 'object' && !Array.isArray(v)) ? v as object : undefined;
+  }
+
+  /**
+   * 把可能是 Boolean / "true"|"false" 字符串 / 数字的值归一为三态 Boolean。
+   * 对应 Android QXLocationManager.coerceBoolean —— H5 常把布尔序列化成字符串。
+   */
+  protected coerceBool(params: object | undefined, key: string): boolean | undefined {
+    const v: Object | undefined = this.raw(params, key);
+    if (v === undefined) {
+      return undefined;
+    }
+    if (typeof v === 'boolean') {
+      return v as boolean;
+    }
+    if (typeof v === 'number') {
+      return (v as number) !== 0;
+    }
+    if (typeof v === 'string') {
+      const s: string = (v as string).trim().toLowerCase();
+      if (s === 'true' || s === '1') {
+        return true;
+      }
+      if (s === 'false' || s === '0') {
+        return false;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * 读取数值,兼容 H5 传字符串的情况(如 openMap 的 latitude:"31.23")。
+   * 对应 Android 的 optString(...).toDoubleOrNull()。
+   */
+  protected numLoose(params: object | undefined, key: string): number | undefined {
+    const v: Object | undefined = this.raw(params, key);
+    if (typeof v === 'number') {
+      return v as number;
+    }
+    if (typeof v === 'string') {
+      const s: string = (v as string).trim();
+      if (s.length === 0) {
+        return undefined;
+      }
+      const n: number = Number.parseFloat(s);
+      return Number.isNaN(n) ? undefined : n;
+    }
+    return undefined;
+  }
+
+  /** 读取字符串数组字段(如 chooseImage 的 sourceType)。 */
+  protected strArray(params: object | undefined, key: string): string[] | undefined {
+    const v: Object | undefined = this.raw(params, key);
+    if (!Array.isArray(v)) {
+      return undefined;
+    }
+    const out: string[] = [];
+    (v as Array<Object>).forEach((item: Object) => {
+      if (typeof item === 'string' && (item as string).trim().length > 0) {
+        out.push((item as string).trim().toLowerCase());
+      }
+    });
+    return out;
+  }
 }

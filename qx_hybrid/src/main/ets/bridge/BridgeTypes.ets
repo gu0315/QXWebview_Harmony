@@ -21,7 +21,12 @@ interface ResponseWire {
   status: string;
   callbackId: string | null;
   data: Object | null;
-  msg: string | null;
+  /**
+   * msg 允许是 string 或对象:插件通过 onError 传结构化 JSON 字符串
+   * (如 QXBridgeError.make 的输出)时,JDBridge 会先解析成对象再塞进来,
+   * H5 侧 errorFunc(response.msg) 直接就是对象,不用再 JSON.parse。
+   */
+  msg: Object | null;
   complete: boolean;
 }
 
@@ -32,11 +37,11 @@ export class BridgeResponse {
   status: string;
   callbackId?: string;
   data?: Object | null;
-  msg?: string | null;
+  msg?: Object | null;
   complete: boolean;
 
   constructor(status: string, callbackId?: string,
-    data?: Object | null, msg?: string | null, complete: boolean = true) {
+    data?: Object | null, msg?: Object | null, complete: boolean = true) {
     this.status = status;
     this.callbackId = callbackId;
     this.data = data;
@@ -79,7 +84,10 @@ export interface BridgeHost {
   /**
    * 原生反调 Web 侧已 registerPlugin 的插件(对应 Android JDBridge.callJS)。
    * BLE 的 onBluetoothDeviceFound / onBLEConnectionStateChange / onBLECharacteristicValueChange
-   * 等事件均经此通道推送,params 需带 eventName 字段。
+   * 与生命周期 onPageLifecycle 等事件均经此通道推送,params 需带 eventName 字段。
+   *
+   * H5 侧 JDBridge 尚未就绪时会先入队,等收到 _jsInit 再补发,不会丢事件。
+   * @param callback 可选;H5 处理完经 _respondFromJs 回执时触发。
    */
-  callJS(pluginName: string, params?: Object): void;
+  callJS(pluginName: string, params?: Object, callback?: BridgeCallback): void;
 }

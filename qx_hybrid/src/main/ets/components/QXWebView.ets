@@ -17,6 +17,8 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { JDBridge } from '../bridge/JDBridge';
 import { BridgeHost, BridgeCallback } from '../bridge/BridgeTypes';
 import { QXHostDelegate, QXHostBridgeDelegate } from '../bridge/HostDelegate';
+import { PageResultCenter } from '../bridge/PageResultCenter';
+import { QXWebViewController } from './QXWebViewController';
 import { StorageUtil } from '../utils/StorageUtil';
 import { QXBasePlugin } from '../plugins/QXBasePlugin';
 import { QXBlePlugin } from '../plugins/QXBlePlugin';
@@ -47,8 +49,8 @@ class WebViewBridgeHost implements BridgeHost {
     this.bridge?.dispatchEvent(eventName, detail);
   }
 
-  callJS(pluginName: string, params?: Object): void {
-    this.bridge?.callJS(pluginName, params);
+  callJS(pluginName: string, params?: Object, callback?: BridgeCallback): void {
+    this.bridge?.callJS(pluginName, params, callback);
   }
 }
 
@@ -56,12 +58,24 @@ class WebViewBridgeHost implements BridgeHost {
 export struct QXWebView {
   /** 要加载的 H5 地址。 */
   url: string = '';
-  /** 宿主页面代理(返回/关闭/打开新页/导航栏)。可选。 */
+  /** 宿主页面代理(关闭/打开新页/导航栏/首屏渲染)。可选。 */
   delegate: QXHostDelegate | null = null;
   /** 宿主桥代理(处理 H5 的自定义方法,如 getUserInfo 返回 phone/vin/mac)。可选。 */
   hostBridgeDelegate: QXHostBridgeDelegate | null = null;
   /** 扫码实现(需 Scan Kit,真机),可选注入。 */
   scanHandler?: (cb: BridgeCallback) => void;
+  /**
+   * 本页的回传 id。由打开方 openWebView({forResult:true}) 生成并经
+   * QXHostDelegate.onOpenWebView(options.pageId) 传下来,原样赋给本属性即可:
+   * 本页 closeWithResult 时 SDK 会把数据回给打开方,被返回时自动回 {cancelled:true}。
+   */
+  pageId?: string;
+  /**
+   * 生命周期控制器。ArkUI 的 onPageShow/onPageHide 只在 @Entry 上触发,嵌套组件收不到,
+   * 需承载页面持有一个 QXWebViewController 传进来并在自己的生命周期里转调,
+   * H5 才能收到 pageWillShow/pageShow/pageWillHide/pageHide 事件。
+   */
+  webController: QXWebViewController | null = null;
 
   private controller: webview.WebviewController = new webview.WebviewController();
   private bridge: JDBridge | null = null;
@@ -82,23 +96,26 @@ export struct QXWebView {
     const bridge: JDBridge = new JDBridge(host);
     host.bridge = bridge;
     this.bridge = bridge;
-    this.lifecyclePlugin.attachBridge(bridge);
+    this.lifecyclePlugin.attachHost(host);
+    this.lifecyclePlugin.setUrl(this.url);
+    this.webController?.attach(this.lifecyclePlugin);
 
     // 注册插件(与 Android QXBridgePluginRegister.registerAllPlugins 对齐)。
-    const basePlugin: QXBasePlugin = new QXBasePlugin(context, this.storage, this.delegate);
+    const basePlugin: QXBasePlugin =
+      new QXBasePlugin(context, this.storage, this.delegate, this.pageId);
     if (this.scanHandler) {
       basePlugin.setScanHandler(this.scanHandler);
     }
     bridge.registerPlugin(basePlugin);
-    bridge.registerPlugin(new QXBlePlugin(context));
+    bridge.registerPlugin(new QXBlePlugin(context, this.storage));
     bridge.registerPlugin(this.lifecyclePlugin);
-    bridge.registerPlugin(new SystemInfoPlugin());
+    bridge.registerPlugin(new SystemInfoPlugin(context));
     bridge.registerPlugin(new QXHostBridgePlugin(this.hostBridgeDelegate));
 
     // 初始化本地存储。
     this.storage.init(context);
 
-    this.lifecyclePlugin.notifyState('onCreate');
+    this.lifecyclePlugin.notifyState('pageLoad', 'aboutToAppear');
   }
 
   /** 运行时申请定位/蓝牙/相机权限。首次加载时弹窗;已授权则静默返回。 */
@@ -119,16 +136,14 @@ export struct QXWebView {
     }
   }
 
-  onPageShow(): void {
-    this.lifecyclePlugin.notifyState('onShow');
-  }
-
-  onPageHide(): void {
-    this.lifecyclePlugin.notifyState('onHide');
-  }
-
   aboutToDisappear(): void {
-    this.lifecyclePlugin.notifyState('onDestroy');
+    this.lifecyclePlugin.notifyState('pageDestroy', 'aboutToDisappear');
+    // 本页是被 forResult 打开的、且没主动 closeWithResult:回 {cancelled:true} 兜底,
+    // 对应 Android QXWebViewActivity.onDestroy 里的 PageResultCenter.cancel。
+    // PageResultCenter.resolve 已把回调摘走,这里的 cancel 对已回传过的页面是空操作。
+    if (this.pageId) {
+      PageResultCenter.cancel(this.pageId);
+    }
     this.bridge?.destroy();
   }
 
@@ -200,6 +215,12 @@ export struct QXWebView {
     Web({ src: this.url, controller: this.controller })
       .onLoadIntercept((event: OnLoadInterceptEvent) => {
         return this.handleUrlLoad(event.data.getRequestUrl());
+      })
+      .onPageBegin((event: OnPageBeginEvent) => {
+        // 新页面开始加载:H5 侧 JDBridge 还没就绪,重新开启 callJS 入队,
+        // 收到 _jsInit 后统一补发。对应 Android JDBridgeInstaller.loadUrl -> startQueueRequest。
+        this.bridge?.startQueueRequest();
+        this.lifecyclePlugin.setUrl(event.url);
       })
       .javaScriptAccess(true)
       .domStorageAccess(true)
