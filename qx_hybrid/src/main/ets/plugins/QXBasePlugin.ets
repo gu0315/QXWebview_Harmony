@@ -138,7 +138,7 @@ const LOCATION_TIMEOUT_MSG: string = '定位超时';
  * 保证在 H5 放弃前一定给出结果或兜底点。
  */
 const DEFAULT_LOCATION_TIMEOUT: number = 8000;
-/** 逆地理编码独立超时:坐标已经拿到,不该被地址解析拖死。 */
+/** 逆地理编码超时上限。实际取值还要受定位剩余预算约束,不能顶穿本次调用的总 timeout。 */
 const REVERSE_GEOCODE_TIMEOUT: number = 3000;
 /** 定位结果缓存键,对齐 Android LocationConstants.SCC_LOCATION_POSITIONING_CACHE。 */
 const LOCATION_CACHE_KEY: string = 'scc_location_positioning_cache';
@@ -319,12 +319,16 @@ export class QXBasePlugin extends BasePlugin {
       return;
     }
 
+    const startedAt: number = Date.now();
     try {
       const request: geoLocationManager.SingleLocationRequest = {
-        // 只授「粗略位置」时优先出首包速度,与 Android 放宽精度门槛的处理同义。
-        locatingPriority: precise
-          ? geoLocationManager.LocatingPriority.PRIORITY_ACCURACY
-          : geoLocationManager.LocatingPriority.PRIORITY_LOCATING_SPEED,
+        /*
+         * 统一用「速度优先」,不再按权限区分:
+         * 1) 家充桩多在地下车库,GNSS 基本无信号,精度优先只会一直等到超时再兜底;
+         * 2) Android 侧是 GPS/NETWORK/FUSED 并行请求、谁先出点用谁,速度优先才与之对齐;
+         * 3) 出的仍是实时点(非缓存),只是精度降到网络定位量级,绑桩记录位置足够。
+         */
+        locatingPriority: geoLocationManager.LocatingPriority.PRIORITY_LOCATING_SPEED,
         locatingTimeoutMs: timeout
       };
       geoLocationManager.getCurrentLocation(request).then((loc: geoLocationManager.Location) => {
@@ -335,7 +339,11 @@ export class QXBasePlugin extends BasePlugin {
           callback.onSuccess(result);
           return;
         }
-        this.fillAddress(loc.latitude, loc.longitude, needAddress === true, result, callback);
+        // 逆地理编码必须吃定位剩下的预算,否则 定位 7s + 地址 3s 会顶穿 H5 的桥超时。
+        const remain: number = timeout - (Date.now() - startedAt);
+        const addressTimeout: number = Math.max(500, Math.min(REVERSE_GEOCODE_TIMEOUT, remain));
+        this.fillAddress(loc.latitude, loc.longitude, needAddress === true,
+          result, addressTimeout, callback);
       }).catch((e: BusinessError) => {
         this.fallbackLocation(precise, `${LOCATION_TIMEOUT_MSG}: ${e.message}`, callback);
       });
@@ -450,10 +458,10 @@ export class QXBasePlugin extends BasePlugin {
 
   /**
    * 逆地理编码补充省/市/区(和可选街道)。任何失败都不阻断,仍返回带坐标的结果。
-   * 坐标已经拿到,地址解析再慢也不该拖着不返回 —— 超过 REVERSE_GEOCODE_TIMEOUT 就先回坐标。
+   * 坐标已经拿到,地址解析再慢也不该拖着不返回 —— timeoutMs 到点就先回坐标。
    */
   private fillAddress(lat: number, lng: number, includeStreet: boolean,
-    result: LocationResult, callback: BridgeCallback): void {
+    result: LocationResult, timeoutMs: number, callback: BridgeCallback): void {
     let settled: boolean = false;
     const done = (): void => {
       if (settled) {
@@ -463,7 +471,7 @@ export class QXBasePlugin extends BasePlugin {
       this.saveLocationCache(result);
       callback.onSuccess(result);
     };
-    const timer: number = setTimeout(done, REVERSE_GEOCODE_TIMEOUT);
+    const timer: number = setTimeout(done, timeoutMs);
     try {
       const req: geoLocationManager.ReverseGeoCodeRequest = {
         latitude: lat,
