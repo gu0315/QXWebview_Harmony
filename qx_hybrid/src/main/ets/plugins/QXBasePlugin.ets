@@ -146,6 +146,13 @@ const LOCATION_CACHE_KEY: string = 'scc_location_positioning_cache';
 const LOCATION_CACHE_MAX_AGE: number = 5 * 60 * 1000;
 /** 兜底点可接受的精度上限(米),对齐 Android COARSE_MAX_ACCURACY 量级。 */
 const FALLBACK_MAX_ACCURACY: number = 300;
+/**
+ * 秒回窗口:系统缓存点在此时间内且精度达标就直接采用,不再等实时定位。
+ * 对齐 Android LocationConstants.FRESH_CACHE_WINDOW —— 刚用过地图类 App 时近乎瞬时返回。
+ */
+const FRESH_CACHE_WINDOW: number = 60 * 1000;
+/** 秒回的精度门槛(米),比兜底严,对齐 Android DEFAULT_ACCURACY 量级。 */
+const FRESH_MAX_ACCURACY: number = 100;
 
 /** 鸿蒙系统设置的 bundle / ability 名。 */
 const SETTINGS_BUNDLE: string = 'com.huawei.hmos.settings';
@@ -319,6 +326,20 @@ export class QXBasePlugin extends BasePlugin {
       return;
     }
 
+    // 秒回:系统缓存点足够新且精度达标时直接用,跳过实时定位(对齐 Android 的 FRESH_CACHE_WINDOW 分支)。
+    const fresh: geoLocationManager.Location | undefined =
+      QXBasePlugin.lastKnownRaw(FRESH_CACHE_WINDOW, FRESH_MAX_ACCURACY);
+    if (fresh) {
+      const freshResult: LocationResult = QXBasePlugin.buildLocationResult(fresh, precise, 'cache');
+      if (needAddress === false) {
+        callback.onSuccess(freshResult);
+        return;
+      }
+      this.fillAddress(fresh.latitude, fresh.longitude, needAddress === true,
+        freshResult, REVERSE_GEOCODE_TIMEOUT, callback);
+      return;
+    }
+
     const startedAt: number = Date.now();
     try {
       const request: geoLocationManager.SingleLocationRequest = {
@@ -400,24 +421,38 @@ export class QXBasePlugin extends BasePlugin {
     });
   }
 
-  /** 系统缓存的最后一次定位。要求 5 分钟内 + 精度达标,否则视为不可用。 */
-  private static lastKnownLocation(precise: boolean): LocationResult | undefined {
+  /**
+   * 系统缓存的最后一次定位(原始 WGS-84 点)。要求在 maxAge 内且精度优于 maxAccuracy。
+   * 秒回和超时兜底用的是同一个点,只是门槛松紧不同,故在这里统一取。
+   */
+  private static lastKnownRaw(maxAge: number,
+    maxAccuracy: number): geoLocationManager.Location | undefined {
     try {
       const loc: geoLocationManager.Location = geoLocationManager.getLastLocation();
       if (!loc || (loc.latitude === 0 && loc.longitude === 0)) {
         return undefined;
       }
-      if (Date.now() - loc.timeStamp > LOCATION_CACHE_MAX_AGE) {
+      // age 为负说明定位时间戳晚于当前系统时间(时钟漂移 / GNSS 与系统时间不同步)。
+      // 这种点不能判成"新鲜",否则会被永久当作可秒回,位置就再也不更新了。
+      const age: number = Date.now() - loc.timeStamp;
+      if (age < 0 || age > maxAge) {
         return undefined;
       }
-      if (loc.accuracy <= 0 || loc.accuracy > FALLBACK_MAX_ACCURACY) {
+      if (loc.accuracy <= 0 || loc.accuracy > maxAccuracy) {
         return undefined;
       }
-      return QXBasePlugin.buildLocationResult(loc, precise, 'cache');
+      return loc;
     } catch (e) {
       // 无权限 / 系统无缓存点时抛错,按不可用处理。
       return undefined;
     }
+  }
+
+  /** 超时兜底用的系统缓存点:5 分钟内 + 放宽后的精度门槛。 */
+  private static lastKnownLocation(precise: boolean): LocationResult | undefined {
+    const loc: geoLocationManager.Location | undefined =
+      QXBasePlugin.lastKnownRaw(LOCATION_CACHE_MAX_AGE, FALLBACK_MAX_ACCURACY);
+    return loc ? QXBasePlugin.buildLocationResult(loc, precise, 'cache') : undefined;
   }
 
   /** 解析本地缓存。同 Android readCache:必须 5 分钟内且精度达标。 */
@@ -430,7 +465,9 @@ export class QXBasePlugin extends BasePlugin {
       if (!cached || !cached.result) {
         return undefined;
       }
-      if (Date.now() - cached.cachedAt > LOCATION_CACHE_MAX_AGE) {
+      // 同 lastKnownRaw:负数(时钟漂移)不能判成新鲜,否则缓存会永不过期。
+      const age: number = Date.now() - cached.cachedAt;
+      if (age < 0 || age > LOCATION_CACHE_MAX_AGE) {
         return undefined;
       }
       const result: LocationResult = cached.result;
@@ -448,9 +485,15 @@ export class QXBasePlugin extends BasePlugin {
     }
   }
 
-  /** 缓存本次定位结果。写失败不影响主流程。 */
+  /**
+   * 缓存本次定位结果。写失败不影响主流程。
+   * cachedAt 取定位时刻而非写入时刻 —— 秒回路径也会走到这里,
+   * 若按写入时刻记,一个 60 秒前的旧点会被刷成"刚刚",后续判新鲜度就失真了。
+   */
   private saveLocationCache(result: LocationResult): void {
-    const cached: CachedLocation = { cachedAt: Date.now(), result: result };
+    const locatedAt: number = Number(result.timestamp);
+    const cachedAt: number = (!isNaN(locatedAt) && locatedAt > 0) ? locatedAt : Date.now();
+    const cached: CachedLocation = { cachedAt: cachedAt, result: result };
     this.storage.setLocationCache(JSON.stringify(cached)).catch(() => {
       // 忽略:缓存只用于兜底,写不进去不影响本次返回。
     });
