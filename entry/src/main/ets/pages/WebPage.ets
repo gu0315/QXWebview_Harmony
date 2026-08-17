@@ -244,7 +244,5 @@ struct WebPage {
     }
     .width('100%')
     .height('100%')
-    // 沉浸式:让 Web 内容区顶到状态栏下,状态栏占位交给 H5 的 HeaderNavBar 自己垫。
-    .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
   }
 }

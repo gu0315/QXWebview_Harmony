@@ -115,6 +115,12 @@ interface LocationResult {
 interface EmptyResult {
 }
 
+/** 本地缓存的定位结果。cachedAt 用于判新鲜度,回给 H5 前会被剔除。 */
+interface CachedLocation {
+  cachedAt: number;
+  result: LocationResult;
+}
+
 const ACK_SUCCESS: SuccessAck = { success: true };
 const EMPTY_RESULT: EmptyResult = {};
 
@@ -125,8 +131,21 @@ const ERROR_LOCATION_TIMEOUT: number = 1008;
 const PERMISSION_DENIED_MSG: string = '定位权限被拒绝，请在系统设置中开启';
 const LOCATION_SERVICE_DISABLED_MSG: string = '系统定位服务未开启，请打开 GPS / 网络定位';
 const LOCATION_TIMEOUT_MSG: string = '定位超时';
-/** Android DEFAULT_TIMEOUT = 20000 */
-const DEFAULT_LOCATION_TIMEOUT: number = 20000;
+/**
+ * 默认定位超时。Android 侧是 20000,但线上 H5 的桥调用超时是 12000(nativeBridge.js location),
+ * 且它只把 timeout 用在桥层、不放进 params,原生取不到会落到本默认值。
+ * 原生若比 12000 还晚返回,H5 早已判超时并重试,等于白等一轮 —— 故收到 8000,
+ * 保证在 H5 放弃前一定给出结果或兜底点。
+ */
+const DEFAULT_LOCATION_TIMEOUT: number = 8000;
+/** 逆地理编码独立超时:坐标已经拿到,不该被地址解析拖死。 */
+const REVERSE_GEOCODE_TIMEOUT: number = 3000;
+/** 定位结果缓存键,对齐 Android LocationConstants.SCC_LOCATION_POSITIONING_CACHE。 */
+const LOCATION_CACHE_KEY: string = 'scc_location_positioning_cache';
+/** 缓存有效期 5 分钟,与 Android readCache 一致。 */
+const LOCATION_CACHE_MAX_AGE: number = 5 * 60 * 1000;
+/** 兜底点可接受的精度上限(米),对齐 Android COARSE_MAX_ACCURACY 量级。 */
+const FALLBACK_MAX_ACCURACY: number = 300;
 
 /** 鸿蒙系统设置的 bundle / ability 名。 */
 const SETTINGS_BUNDLE: string = 'com.huawei.hmos.settings';
@@ -309,46 +328,142 @@ export class QXBasePlugin extends BasePlugin {
         locatingTimeoutMs: timeout
       };
       geoLocationManager.getCurrentLocation(request).then((loc: geoLocationManager.Location) => {
-        // 系统返回 WGS-84,转成 H5 地图使用的 GCJ-02(与 Android GCJ02Converter 同算法)。
-        const gcj: LatLng = wgs84ToGcj02(loc.latitude, loc.longitude);
-        const result: LocationResult = {
-          latitude: gcj.latitude,
-          longitude: gcj.longitude,
-          accuracy: loc.accuracy,
-          altitude: loc.altitude ?? 0,
-          speed: (loc.speed === undefined || loc.speed < 0) ? -1 : loc.speed,
-          timestamp: `${loc.timeStamp}`,
-          geopoint: `${gcj.latitude.toFixed(6)},${gcj.longitude.toFixed(6)}`,
-          gcoord: 'GCJ02',
-          hasPermission: true,
-          isEnable: true,
-          preciseLocation: precise,
-          locationType: 'new',
-          state: '',
-          city: '',
-          district: '',
-          street: '',
-          streetNum: ''
-        };
+        const result: LocationResult = QXBasePlugin.buildLocationResult(loc, precise, 'new');
         if (needAddress === false) {
+          // 实时定位成功才刷新缓存,供后续超时兜底使用。
+          this.saveLocationCache(result);
           callback.onSuccess(result);
           return;
         }
         this.fillAddress(loc.latitude, loc.longitude, needAddress === true, result, callback);
       }).catch((e: BusinessError) => {
-        callback.onSuccess(QXBasePlugin.failureLocation(
-          ERROR_LOCATION_TIMEOUT, `${LOCATION_TIMEOUT_MSG}: ${e.message}`, true, true, precise));
+        this.fallbackLocation(precise, `${LOCATION_TIMEOUT_MSG}: ${e.message}`, callback);
       });
     } catch (err) {
       const e: BusinessError = err as BusinessError;
-      callback.onSuccess(QXBasePlugin.failureLocation(
-        ERROR_LOCATION_TIMEOUT, `${LOCATION_TIMEOUT_MSG}: ${e.message}`, true, true, precise));
+      this.fallbackLocation(precise, `${LOCATION_TIMEOUT_MSG}: ${e.message}`, callback);
     }
   }
 
-  /** 逆地理编码补充省/市/区(和可选街道)。任何失败都不阻断,仍返回带坐标的结果。 */
+  /** 把系统 Location 转成回包结构。系统返回 WGS-84,转成 H5 地图用的 GCJ-02(与 Android GCJ02Converter 同算法)。 */
+  private static buildLocationResult(loc: geoLocationManager.Location,
+    precise: boolean, locationType: string): LocationResult {
+    const gcj: LatLng = wgs84ToGcj02(loc.latitude, loc.longitude);
+    const result: LocationResult = {
+      latitude: gcj.latitude,
+      longitude: gcj.longitude,
+      accuracy: loc.accuracy,
+      altitude: loc.altitude ?? 0,
+      speed: (loc.speed === undefined || loc.speed < 0) ? -1 : loc.speed,
+      timestamp: `${loc.timeStamp}`,
+      geopoint: `${gcj.latitude.toFixed(6)},${gcj.longitude.toFixed(6)}`,
+      gcoord: 'GCJ02',
+      hasPermission: true,
+      isEnable: true,
+      preciseLocation: precise,
+      locationType: locationType,
+      state: '',
+      city: '',
+      district: '',
+      street: '',
+      streetNum: ''
+    };
+    return result;
+  }
+
+  /**
+   * 实时定位超时/失败后的兜底,对齐 Android 的降级点 + readCache:
+   * 先取系统最近一次已知位置,再取本地缓存,都没有才回 failure。
+   * 兜底点不再做逆地理编码 —— 已经超时了,不能让地址解析再拖一轮;省市区留空由前端容错。
+   */
+  private fallbackLocation(precise: boolean, failMsg: string, callback: BridgeCallback): void {
+    const lastKnown: LocationResult | undefined = QXBasePlugin.lastKnownLocation(precise);
+    if (lastKnown) {
+      callback.onSuccess(lastKnown);
+      return;
+    }
+    this.storage.getLocationCache().then((raw: string) => {
+      const cached: LocationResult | undefined = QXBasePlugin.parseLocationCache(raw, precise);
+      callback.onSuccess(cached ?? QXBasePlugin.failureLocation(
+        ERROR_LOCATION_TIMEOUT, failMsg, true, true, precise));
+    }).catch(() => {
+      callback.onSuccess(QXBasePlugin.failureLocation(
+        ERROR_LOCATION_TIMEOUT, failMsg, true, true, precise));
+    });
+  }
+
+  /** 系统缓存的最后一次定位。要求 5 分钟内 + 精度达标,否则视为不可用。 */
+  private static lastKnownLocation(precise: boolean): LocationResult | undefined {
+    try {
+      const loc: geoLocationManager.Location = geoLocationManager.getLastLocation();
+      if (!loc || (loc.latitude === 0 && loc.longitude === 0)) {
+        return undefined;
+      }
+      if (Date.now() - loc.timeStamp > LOCATION_CACHE_MAX_AGE) {
+        return undefined;
+      }
+      if (loc.accuracy <= 0 || loc.accuracy > FALLBACK_MAX_ACCURACY) {
+        return undefined;
+      }
+      return QXBasePlugin.buildLocationResult(loc, precise, 'cache');
+    } catch (e) {
+      // 无权限 / 系统无缓存点时抛错,按不可用处理。
+      return undefined;
+    }
+  }
+
+  /** 解析本地缓存。同 Android readCache:必须 5 分钟内且精度达标。 */
+  private static parseLocationCache(raw: string, precise: boolean): LocationResult | undefined {
+    if (raw.length === 0) {
+      return undefined;
+    }
+    try {
+      const cached: CachedLocation = JSON.parse(raw) as CachedLocation;
+      if (!cached || !cached.result) {
+        return undefined;
+      }
+      if (Date.now() - cached.cachedAt > LOCATION_CACHE_MAX_AGE) {
+        return undefined;
+      }
+      const result: LocationResult = cached.result;
+      if (result.accuracy <= 0 || result.accuracy > FALLBACK_MAX_ACCURACY) {
+        return undefined;
+      }
+      // 权限/开关状态按当次调用的实况覆盖,缓存里的可能已经过期。
+      result.locationType = 'cache';
+      result.hasPermission = true;
+      result.isEnable = true;
+      result.preciseLocation = precise;
+      return result;
+    } catch (e) {
+      return undefined;
+    }
+  }
+
+  /** 缓存本次定位结果。写失败不影响主流程。 */
+  private saveLocationCache(result: LocationResult): void {
+    const cached: CachedLocation = { cachedAt: Date.now(), result: result };
+    this.storage.setLocationCache(JSON.stringify(cached)).catch(() => {
+      // 忽略:缓存只用于兜底,写不进去不影响本次返回。
+    });
+  }
+
+  /**
+   * 逆地理编码补充省/市/区(和可选街道)。任何失败都不阻断,仍返回带坐标的结果。
+   * 坐标已经拿到,地址解析再慢也不该拖着不返回 —— 超过 REVERSE_GEOCODE_TIMEOUT 就先回坐标。
+   */
   private fillAddress(lat: number, lng: number, includeStreet: boolean,
     result: LocationResult, callback: BridgeCallback): void {
+    let settled: boolean = false;
+    const done = (): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      this.saveLocationCache(result);
+      callback.onSuccess(result);
+    };
+    const timer: number = setTimeout(done, REVERSE_GEOCODE_TIMEOUT);
     try {
       const req: geoLocationManager.ReverseGeoCodeRequest = {
         latitude: lat,
@@ -377,13 +492,16 @@ export class QXBasePlugin extends BasePlugin {
             result.streetNum = subRoad;
           }
         }
-        callback.onSuccess(result);
+        clearTimeout(timer);
+        done();
       }).catch(() => {
         // 逆编码失败(如模拟器无地理编码服务):仍返回坐标,省市区为空。
-        callback.onSuccess(result);
+        clearTimeout(timer);
+        done();
       });
     } catch (err) {
-      callback.onSuccess(result);
+      clearTimeout(timer);
+      done();
     }
   }
 

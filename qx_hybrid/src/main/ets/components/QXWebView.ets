@@ -13,6 +13,7 @@
 
 import { webview } from '@kit.ArkWeb';
 import { common, abilityAccessCtrl, Permissions, Want } from '@kit.AbilityKit';
+import { window } from '@kit.ArkUI';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { JDBridge } from '../bridge/JDBridge';
 import { BridgeHost, BridgeCallback } from '../bridge/BridgeTypes';
@@ -76,6 +77,14 @@ export struct QXWebView {
    * H5 才能收到 pageWillShow/pageShow/pageWillHide/pageHide 事件。
    */
   webController: QXWebViewController | null = null;
+  /**
+   * 沉浸式布局。默认 true,与 iOS / Android 一致:
+   * 窗口铺满全屏,Web 内容区顶到状态栏下,状态栏占位由 H5 自己按 statusBarHeight 垫。
+   * 关掉则由系统避让状态栏 —— 此时 H5 若仍垫占位,顶部会多出一个状态栏高度的空白。
+   */
+  immersive: boolean = true;
+  /** 沉浸式下的状态栏前景色。H5 头部多为浅色底,默认用深色文字。 */
+  statusBarContentColor: string = '#000000';
 
   private controller: webview.WebviewController = new webview.WebviewController();
   private bridge: JDBridge | null = null;
@@ -90,6 +99,10 @@ export struct QXWebView {
     // 运行时申请 user_grant 权限(定位/蓝牙/相机)。HAR 声明的权限不会自动生效,
     // 必须在运行时向用户申请,否则 H5 调 location/BLE/扫码会失败。
     this.requestRuntimePermissions(context);
+
+    if (this.immersive) {
+      this.applyImmersiveLayout(context);
+    }
 
     // BridgeHost:插件通过它执行 JS。ArkTS 不允许对象字面量实现带方法的接口,故用类。
     const host: WebViewBridgeHost = new WebViewBridgeHost(this.controller);
@@ -116,6 +129,25 @@ export struct QXWebView {
     this.storage.init(context);
 
     this.lifecyclePlugin.notifyState('pageLoad', 'aboutToAppear');
+  }
+
+  /**
+   * 开启沉浸式布局。窗口层面铺满全屏,配合 build 里 Web 的 expandSafeArea 生效。
+   * 只影响窗口属性,不改宿主的原生页面 —— 原生页未声明 expandSafeArea,仍由系统自动避让。
+   */
+  private applyImmersiveLayout(context: common.UIAbilityContext): void {
+    window.getLastWindow(context).then((win: window.Window): void => {
+      win.setWindowLayoutFullScreen(true).catch((e: BusinessError): void => {
+        console.error('QXWebView setWindowLayoutFullScreen failed: ' + e?.message);
+      });
+      win.setWindowSystemBarProperties({
+        statusBarContentColor: this.statusBarContentColor
+      }).catch((e: BusinessError): void => {
+        console.error('QXWebView setWindowSystemBarProperties failed: ' + e?.message);
+      });
+    }).catch((e: BusinessError): void => {
+      console.error('QXWebView getLastWindow failed: ' + e?.message);
+    });
   }
 
   /** 运行时申请定位/蓝牙/相机权限。首次加载时弹窗;已授权则静默返回。 */
@@ -239,5 +271,10 @@ export struct QXWebView {
       })
       .width('100%')
       .height('100%')
+      // 仅开窗口全屏不够:ArkUI 组件默认避让安全区,需显式扩展才能顶到状态栏下。
+      .expandSafeArea(
+        this.immersive ? [SafeAreaType.SYSTEM] : [],
+        this.immersive ? [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM] : []
+      )
   }
 }

@@ -124,6 +124,29 @@ export class StorageUtil {
     await this.cacheStore.flush();
   }
 
+  // ---------------- 定位缓存专用 ----------------
+  // 放 cacheStore 而不是主 store:主 store 是 H5 setStorage/getStorage 的命名空间,
+  // 写在那里会被 H5 的 clearStorage 清掉,也会被 getStorage 遍历到。
+
+  /** 读取上次成功定位的缓存(JSON 字符串)。无缓存返回空串。 */
+  async getLocationCache(): Promise<string> {
+    await this.awaitReady();
+    if (!this.cacheStore) {
+      return '';
+    }
+    const v: preferences.ValueType = await this.cacheStore.get('location_cache', '');
+    return typeof v === 'string' ? v as string : '';
+  }
+
+  async setLocationCache(json: string): Promise<void> {
+    await this.awaitReady();
+    if (!this.cacheStore) {
+      return;
+    }
+    await this.cacheStore.put('location_cache', json);
+    await this.cacheStore.flush();
+  }
+
   // ---------------- 蓝牙权限状态 ----------------
   // 对应 Android 的 SharedPreferences "qx_ble_permissions"。鸿蒙 checkAccessTokenSync 无法区分
   // 「从未申请过」和「已拒绝」,靠这个标记还原 Android 的 authorization 三态。
