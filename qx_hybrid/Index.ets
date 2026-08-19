@@ -7,6 +7,9 @@
 export { QXWebView } from './src/main/ets/components/QXWebView';
 export { QXWebViewController } from './src/main/ets/components/QXWebViewController';
 
+// H5 调试开关(默认 debug 包自动开启,需要覆盖默认策略时才用)
+export { QXWebDebug } from './src/main/ets/utils/WebDebug';
+
 // 宿主代理与相关类型
 export { QXHostDelegate, OpenWebViewOptions, QXNavigationBarStyle,
   parseNavigationBarStyle, navigationBarStyleJsValue,

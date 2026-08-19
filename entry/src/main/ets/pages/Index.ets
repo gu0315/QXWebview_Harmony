@@ -17,10 +17,10 @@ interface LaunchParams {
 @Entry
 @Component
 struct Index {
-  @State phone: string = '';
+  @State phone: string = '15755336837';
   @State vin: string = '';
   @State mac: string = '';
-  @State url: string = 'https://test-fr-home-charge-web.cheryge.com';
+  @State url: string = 'https://fr-home-charge-web.cheryge.com';
   @State token: string = '';
 
   build() {

@@ -21,6 +21,7 @@ import { QXHostDelegate, QXHostBridgeDelegate } from '../bridge/HostDelegate';
 import { PageResultCenter } from '../bridge/PageResultCenter';
 import { QXWebViewController } from './QXWebViewController';
 import { StorageUtil } from '../utils/StorageUtil';
+import { QXWebDebug } from '../utils/WebDebug';
 import { QXBasePlugin } from '../plugins/QXBasePlugin';
 import { QXBlePlugin } from '../plugins/QXBlePlugin';
 import { QXLifecyclePlugin } from '../plugins/QXLifecyclePlugin';
@@ -95,6 +96,10 @@ export struct QXWebView {
   aboutToAppear(): void {
     const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
     this.abilityContext = context;
+
+    // H5 调试开关。必须赶在下面 build() 创建 Web 组件之前,所以放在 aboutToAppear 最前面。
+    // 默认 debug 包开、release 包关,集成方不用在自己的 UIAbility 里写任何代码。
+    QXWebDebug.applyOnce(context);
 
     // 运行时申请 user_grant 权限(定位/蓝牙/相机)。HAR 声明的权限不会自动生效,
     // 必须在运行时向用户申请,否则 H5 调 location/BLE/扫码会失败。

@@ -23,7 +23,7 @@ import { BasePlugin } from '../bridge/BridgePlugin';
 import { BridgeCallback, BridgeHost } from '../bridge/BridgeTypes';
 import { QXBridgeError } from '../bridge/QXBridgeError';
 import { QXBLEventType, QXBleErrorCode, bleErrorMessage } from './QXBleDefine';
-import { access, ble } from '@kit.ConnectivityKit';
+import { access, ble, connection } from '@kit.ConnectivityKit';
 import { abilityAccessCtrl, common, Permissions, PermissionRequestResult } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -194,6 +194,8 @@ export class QXBlePlugin extends BasePlugin {
   private initialized: boolean = false;
   private scanning: boolean = false;
   private found: Map<string, BleDeviceInfo> = new Map();
+  /** 设备名缓存。found 每轮扫描会清空,但已连接/已配对设备的名字要留着,补列表时用。 */
+  private deviceNames: Map<string, string> = new Map();
   private gattClients: Map<string, ble.GattClientDevice> = new Map();
   private connected: Set<string> = new Set();
   private pendingConnects: Map<string, PendingConnect> = new Map();
@@ -451,6 +453,7 @@ export class QXBlePlugin extends BasePlugin {
       this.connected.clear();
       this.notifying.clear();
       this.found.clear();
+      this.deviceNames.clear();
       this.initialized = false;
       this.ok(callback, undefined, '蓝牙适配器已关闭');
     } catch (err) {
@@ -505,14 +508,24 @@ export class QXBlePlugin extends BasePlugin {
       this.found.clear();
       this.log(`startDiscovery: 适配器状态=${access.getState()}(2=STATE_ON)`);
 
+      // 重复注册会导致同一次 BLEDeviceFind 回调多次,先摘掉上一轮可能残留的监听。
+      try {
+        ble.off('BLEDeviceFind');
+      } catch (e) {
+        // 没注册过时会抛,忽略。
+      }
       ble.on('BLEDeviceFind', (devices: Array<ble.ScanResult>) => {
         devices.forEach((d: ble.ScanResult) => {
           // 去重:同一台设备只上报一次(对齐 Android,避免 aggressive 模式重复刷屏)。
           if (this.found.has(d.deviceId)) {
             return;
           }
+          const scanName: string = d.deviceName ?? '';
+          if (scanName.length > 0) {
+            this.deviceNames.set(d.deviceId, scanName);
+          }
           const dev: BleDeviceInfo = {
-            name: d.deviceName ?? '',
+            name: scanName.length > 0 ? scanName : this.nameOf(d.deviceId),
             RSSI: d.rssi,
             deviceId: d.deviceId,
             isSystemConnected: this.connected.has(d.deviceId),
@@ -541,10 +554,88 @@ export class QXBlePlugin extends BasePlugin {
       this.log('ble.startBLEScan 已调用(等待 BLEDeviceFind 回调)');
       this.scanning = true;
       this.okScanStarted(callback);
+      // 已连接的设备不再发广播,扫不到,得手动补进本轮结果(见 includeKnownDevices)。
+      // 放到成功回包之后再推,避免 H5 还没开始监听事件就先收到设备。
+      setTimeout(() => this.includeKnownDevices(), 0);
     } catch (err) {
       const e: BusinessError = err as BusinessError;
       this.log(`❌ startBLEScan 抛异常 code=${e.code} msg=${e.message}`);
       this.fail(callback, QXBleErrorCode.SCAN_NOT_AVAILABLE, `扫描失败: ${e.code} ${e.message}`);
+    }
+  }
+
+  /**
+   * 把系统已知设备补进本轮扫描结果。对应 Android 的 includeSystemKnownDevices。
+   *
+   * BLE 设备一旦被连上就不再发广播包,重新扫描时 BLEDeviceFind 永远不会再上报它,
+   * H5 的设备列表里刚连上的桩就消失了。这里在开扫后立刻把「已连接」的设备补一条
+   * onBluetoothDeviceFound 事件并写进 found,让表现和 Android 一致。
+   * 仅配对、未连接的设备按 Android 的规则不推事件(只用来标 isBonded)。
+   */
+  private includeKnownDevices(): void {
+    if (!this.scanning) {
+      return;
+    }
+    const paired: Set<string> = new Set<string>(this.pairedDevices());
+    const connectedIds: Set<string> = new Set<string>();
+    // 自己维护的连接表(createBLEConnection 连上的),这是最可靠的来源。
+    this.connected.forEach((deviceId: string) => connectedIds.add(deviceId));
+    // 再问一遍系统,覆盖 App 重启前就连着的情况。对齐 Android 的 getConnectedDevices(GATT)。
+    try {
+      ble.getConnectedBLEDevices().forEach((deviceId: string) => connectedIds.add(deviceId));
+    } catch (e) {
+      this.log(`getConnectedBLEDevices 失败: ${(e as BusinessError).message}`);
+    }
+
+    connectedIds.forEach((deviceId: string) => {
+      if (this.found.has(deviceId)) {
+        return;
+      }
+      const dev: BleDeviceInfo = {
+        name: this.nameOf(deviceId),
+        RSSI: 0,
+        deviceId: deviceId,
+        isSystemConnected: true,
+        isBonded: paired.has(deviceId)
+      };
+      this.found.set(deviceId, dev);
+      this.log(`补入已连接设备 id=${deviceId} name=${dev.name}`);
+      const ev: DeviceFoundEvent = {
+        eventName: QXBLEventType.ON_BLUETOOTH_DEVICE_FOUND,
+        name: dev.name,
+        RSSI: dev.RSSI,
+        deviceId: dev.deviceId,
+        isSystemConnected: dev.isSystemConnected,
+        isBonded: dev.isBonded
+      };
+      this.pushEvent(ev);
+    });
+  }
+
+  /** 系统已配对设备列表,取不到就当空。 */
+  private pairedDevices(): string[] {
+    try {
+      return connection.getPairedDevices();
+    } catch (e) {
+      this.log(`getPairedDevices 失败: ${(e as BusinessError).message}`);
+      return [];
+    }
+  }
+
+  /** 设备名:优先用扫描时记下的,没有再问系统(已连接设备扫不到广播,名字只能这么拿)。 */
+  private nameOf(deviceId: string): string {
+    const cached: string | undefined = this.deviceNames.get(deviceId);
+    if (cached !== undefined && cached.length > 0) {
+      return cached;
+    }
+    try {
+      const name: string = connection.getRemoteDeviceName(deviceId);
+      if (name.length > 0) {
+        this.deviceNames.set(deviceId, name);
+      }
+      return name;
+    } catch (e) {
+      return '';
     }
   }
 
@@ -590,14 +681,15 @@ export class QXBlePlugin extends BasePlugin {
     }
     const devices: BleDeviceInfo[] = Array.from(this.found.values());
     // 已连接但不在本轮扫描结果里的设备也要带上(对齐 Android 的 connectedDevices 合并)。
+    const paired: Set<string> = new Set<string>(this.pairedDevices());
     this.connected.forEach((deviceId: string) => {
       if (!this.found.has(deviceId)) {
         const item: BleDeviceInfo = {
-          name: '',
+          name: this.nameOf(deviceId),
           RSSI: 0,
           deviceId: deviceId,
           isSystemConnected: true,
-          isBonded: false
+          isBonded: paired.has(deviceId)
         };
         devices.push(item);
       }
@@ -618,7 +710,7 @@ export class QXBlePlugin extends BasePlugin {
       this.fail(callback, QXBleErrorCode.INVALID_DATA, 'deviceId 为空或格式不正确');
       return;
     }
-    const name: string = this.found.get(deviceId)?.name ?? '';
+    const name: string = this.found.get(deviceId)?.name ?? this.nameOf(deviceId);
     if (this.connected.has(deviceId)) {
       const already: ConnectedResult = { deviceId: deviceId, name: name.length > 0 ? name : '未知设备' };
       this.ok(callback, already, '设备已连接');
