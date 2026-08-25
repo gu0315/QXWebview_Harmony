@@ -201,6 +201,15 @@ export class QXBlePlugin extends BasePlugin {
   private pendingConnects: Map<string, PendingConnect> = new Map();
   /** 已订阅通知的特征,用于 getBLEDeviceCharacteristics 的 isNotifying 字段。 */
   private notifying: Set<string> = new Set();
+  /**
+   * 每台设备一条写队列的队尾 Promise。
+   *
+   * 鸿蒙 GATT 不排队并发写:上一次 writeCharacteristicValue 还没回
+   * BLECharacteristicWriteComplete 时再写,会直接返回 2900099 Operation failed。
+   * Android/iOS 的 GATT 层内部有队列,所以 H5 侧连着发包没问题,到鸿蒙就炸。
+   * H5 收到写失败会判定「链路已失效」拆掉连接,表现就是连不上,故必须自己串行化。
+   */
+  private writeQueues: Map<string, Promise<void>> = new Map();
 
   /** 调试日志开关。默认关(不刷屏);需要排查时改成 true,日志会同时打到 hilog 和 H5 vConsole。 */
   private static readonly DEBUG: boolean = false;
@@ -516,13 +525,33 @@ export class QXBlePlugin extends BasePlugin {
       }
       ble.on('BLEDeviceFind', (devices: Array<ble.ScanResult>) => {
         devices.forEach((d: ble.ScanResult) => {
-          // 去重:同一台设备只上报一次(对齐 Android,避免 aggressive 模式重复刷屏)。
-          if (this.found.has(d.deviceId)) {
-            return;
-          }
-          const scanName: string = d.deviceName ?? '';
+          // 系统解析出的 deviceName 为空时,再自己从原始广播包里取 Local Name。
+          const parsedName: string = d.deviceName ?? '';
+          const scanName: string =
+            parsedName.length > 0 ? parsedName : QXBlePlugin.localNameFromAdv(d.data);
           if (scanName.length > 0) {
             this.deviceNames.set(d.deviceId, scanName);
+          }
+          // 去重:同一台设备只上报一次(对齐 Android,避免 aggressive 模式重复刷屏)。
+          // 例外:BLE 名字常在 SCAN_RSP 包而非 ADV 包里,鸿蒙会分两次 ScanResult 上报,
+          // 首次拿到的是空名。若已记录的是空名而这次带上了名字,补一次上报,
+          // 否则 H5 侧「有名字才进列表」的过滤会永久漏掉这台设备。
+          const known: BleDeviceInfo | undefined = this.found.get(d.deviceId);
+          if (known) {
+            if (known.name.length === 0 && scanName.length > 0) {
+              known.name = scanName;
+              const fixEv: DeviceFoundEvent = {
+                eventName: QXBLEventType.ON_BLUETOOTH_DEVICE_FOUND,
+                name: known.name,
+                RSSI: d.rssi,
+                deviceId: known.deviceId,
+                isSystemConnected: known.isSystemConnected,
+                isBonded: known.isBonded
+              };
+              this.log(`补齐设备名 id=${known.deviceId} name=${known.name}`);
+              this.pushEvent(fixEv);
+            }
+            return;
           }
           const dev: BleDeviceInfo = {
             name: scanName.length > 0 ? scanName : this.nameOf(d.deviceId),
@@ -752,6 +781,8 @@ export class QXBlePlugin extends BasePlugin {
       this.connected.add(deviceId);
     } else if (state.state === STATE_DISCONNECTED) {
       this.connected.delete(deviceId);
+      // 链路没了,在途的写不可能再完成,丢掉队尾避免后续新连接被旧 Promise 卡住。
+      this.writeQueues.delete(deviceId);
     }
 
     const ev: ConnChangeEvent = {
@@ -800,6 +831,7 @@ export class QXBlePlugin extends BasePlugin {
       client.close();
       this.gattClients.delete(deviceId);
       this.connected.delete(deviceId);
+      this.writeQueues.delete(deviceId);
       this.clearPending(deviceId);
       this.ok(callback, undefined, '已断开连接');
     } catch (err) {
@@ -855,6 +887,40 @@ export class QXBlePlugin extends BasePlugin {
     }).catch((e: BusinessError) => {
       this.fail(callback, QXBleErrorCode.NO_CHARACTERISTIC, `获取特征失败${e.message}`);
     });
+  }
+
+  /**
+   * 从原始广播包里解析设备名。AD 结构为 [len][type][payload...],
+   * type 0x09 = Complete Local Name,0x08 = Shortened Local Name。
+   *
+   * 鸿蒙的 ScanResult.deviceName 在名字只出现在 SCAN_RSP 包时可能为空,
+   * 而 H5 侧靠蓝牙名(FREELANDER 前缀 + 桩 ID 后 8 位)筛目标桩,名字丢了就连不上。
+   */
+  private static localNameFromAdv(raw: ArrayBuffer | undefined): string {
+    if (!raw || raw.byteLength === 0) {
+      return '';
+    }
+    const bytes: Uint8Array = new Uint8Array(raw);
+    let i: number = 0;
+    while (i < bytes.length) {
+      const len: number = bytes[i];
+      // len 含 type 字节;为 0 表示 AD 结构结束。整段占 bytes[i .. i+len]。
+      if (len === 0 || i + len >= bytes.length) {
+        break;
+      }
+      const type: number = bytes[i + 1];
+      if (type === 0x09 || type === 0x08) {
+        const chars: string[] = [];
+        for (let j: number = i + 2; j <= i + len; j++) {
+          if (bytes[j] !== 0) {
+            chars.push(String.fromCharCode(bytes[j]));
+          }
+        }
+        return chars.join('').trim();
+      }
+      i += len + 1;
+    }
+    return '';
   }
 
   /** 属性位 -> 字符串数组。取值与 Android QXBleUtils.formatCharacteristicProperties 一致。 */
@@ -924,14 +990,19 @@ export class QXBlePlugin extends BasePlugin {
       descriptors: []
     };
     const hex: string = bytesToHex(bytes);
-    client.writeCharacteristicValue(characteristic, ble.GattWriteType.WRITE)
+    // 串行化:接到上一次写的队尾后面,保证同一设备任一时刻只有一次在途的 GATT 写。
+    const tail: Promise<void> = this.writeQueues.get(deviceId) ?? Promise.resolve();
+    const task: Promise<void> = tail
+      .then((): Promise<void> => client.writeCharacteristicValue(characteristic, ble.GattWriteType.WRITE))
       .then(() => {
         const r: WriteResult = { characteristicId: charUuid, value: hex };
         this.ok(callback, r, '写入特征值成功');
       })
       .catch((e: BusinessError) => {
+        // 队列不能因为单次失败而中断,这里吞掉异常,只把失败回给发起方。
         this.fail(callback, QXBleErrorCode.SYSTEM_ERROR, `数据发送失败: 错误码=${e.code}`);
       });
+    this.writeQueues.set(deviceId, task);
   }
 
   /**

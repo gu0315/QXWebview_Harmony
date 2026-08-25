@@ -7,6 +7,14 @@
 export { QXWebView } from './src/main/ets/components/QXWebView';
 export { QXWebViewController } from './src/main/ets/components/QXWebViewController';
 
+// 零承载页接入:SDK 自带的命名路由承载页 + 全局配置。
+// 宿主启动时 QXWebRegistry.configure(...) 登记一次业务能力,之后
+// router.pushNamedRoute({ name: QX_WEB_PAGE_ROUTE_NAME, params: { url } }) 即可打开,
+// 生命周期与系统返回键全在 SDK 内处理,无需宿主写 onBackPress/onPageShow。
+// (此处的 export 同时触发命名路由注册。)
+export { QXWebPage, QX_WEB_PAGE_ROUTE_NAME } from './src/main/ets/pages/QXWebPage';
+export { QXWebRegistry, QXWebPageConfig } from './src/main/ets/pages/QXWebRegistry';
+
 // H5 调试开关(默认 debug 包自动开启,需要覆盖默认策略时才用)
 export { QXWebDebug } from './src/main/ets/utils/WebDebug';
 

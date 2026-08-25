@@ -212,6 +212,14 @@ struct WebPage {
     this.webController.onPageHide();
   }
 
+  /**
+   * 系统返回键:交给 SDK 处理。H5 内部还有历史时逐级后退并消费(true),
+   * 到 H5 根页时返回 false,由系统默认关闭本承载页 —— 避免一次性把整个 WebView 退掉。
+   */
+  onBackPress(): boolean {
+    return this.webController.onBackPress();
+  }
+
   aboutToAppear(): void {
     const p: LaunchParams = router.getParams() as LaunchParams;
     if (p) {

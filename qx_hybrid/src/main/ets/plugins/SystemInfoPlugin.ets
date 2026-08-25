@@ -12,6 +12,7 @@
 import { BasePlugin } from '../bridge/BridgePlugin';
 import { BridgeCallback, BridgeHost } from '../bridge/BridgeTypes';
 import { QXBridgeError } from '../bridge/QXBridgeError';
+import { SafeAreaHolder } from '../utils/SafeAreaHolder';
 import deviceInfo from '@ohos.deviceInfo';
 import { display, window } from '@kit.ArkUI';
 import { bundleManager, common } from '@kit.AbilityKit';
@@ -79,6 +80,69 @@ function px2dp(px: number, density: number): number {
   return px / density;
 }
 
+/** 等待避让区就绪的轮询参数。沉浸式全屏 setWindowLayoutFullScreen 异步生效,首帧可能取到 0。 */
+const AVOID_AREA_MAX_TRIES: number = 20;
+const AVOID_AREA_RETRY_INTERVAL_MS: number = 50;
+
+/**
+ * 沉浸式下测不到状态栏高度时的兜底值(vp)。
+ *
+ * 沉浸式全屏时 Web 内容铺到状态栏底下,statusBarHeight 若为 0,H5 头部不垫占位、
+ * 返回按钮会顶进状态栏 —— 这种情况下 0 一定是错的,宁可给个通用值也不能回 0。
+ * 40vp 接近华为机型常见状态栏高度,也与 H5 侧默认值(43)同量级。
+ * 注意:仅在沉浸式下启用;非沉浸式由系统自动避让,0 是正确值。
+ */
+const FALLBACK_STATUS_BAR_HEIGHT_VP: number = 40;
+
+/** 简易 sleep。 */
+function delay(ms: number): Promise<void> {
+  return new Promise<void>((resolve: () => void): void => {
+    setTimeout((): void => resolve(), ms);
+  });
+}
+
+/**
+ * 读取状态栏避让高度(px),等它就绪。
+ *
+ * 关键点:H5 在 onLaunch 只调一次 getSystemInfo 并永久缓存结果。若首帧沉浸式全屏还没生效,
+ * getWindowAvoidArea(TYPE_SYSTEM).topRect.height 会是 0,H5 就把 statusBarHeight 记成 0、
+ * 返回按钮顶进状态栏(实测 HUAWEI ALN-AL00 / OpenHarmony 6.1.1 复现)。
+ * getSystemInfo 本身是异步的,这里轮询直到拿到正值或超时,保证首次调用就返回正确高度。
+ *
+ * 取值优先级:实时避让区 → 缓存值 → 沉浸式兜底常量。日志带 [QXSafeArea] 前缀,
+ * 真机排查时过滤这个关键字即可看出到底是「等几轮就好了」还是「这台机器恒为 0」。
+ */
+async function resolveStatusBarHeightPx(win: window.Window, density: number): Promise<number> {
+  for (let i: number = 0; i < AVOID_AREA_MAX_TRIES; i++) {
+    let px: number = 0;
+    try {
+      px = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM).topRect.height;
+    } catch (e) {
+      px = 0;
+    }
+    if (px > 0) {
+      SafeAreaHolder.updateStatusBarHeightPx(px);
+      console.info(`[QXSafeArea] 第 ${i + 1} 次取到状态栏高度 ${px}px`);
+      return px;
+    }
+    await delay(AVOID_AREA_RETRY_INTERVAL_MS);
+  }
+
+  // 轮询超时:窗口可能一直没进全屏(setWindowLayoutFullScreen 失败),或该机型避让区恒为 0。
+  const cached: number = SafeAreaHolder.getStatusBarHeightPx();
+  if (cached > 0) {
+    console.warn(`[QXSafeArea] 轮询 ${AVOID_AREA_MAX_TRIES} 次均为 0,回退缓存值 ${cached}px`);
+    return cached;
+  }
+  if (SafeAreaHolder.isImmersive()) {
+    const fallback: number = Math.round(FALLBACK_STATUS_BAR_HEIGHT_VP * density);
+    console.warn(`[QXSafeArea] 沉浸式下始终取不到状态栏高度,启用兜底 ${FALLBACK_STATUS_BAR_HEIGHT_VP}vp = ${fallback}px`);
+    return fallback;
+  }
+  console.info('[QXSafeArea] 非沉浸式,状态栏高度 0 为正确值(系统已自动避让)');
+  return 0;
+}
+
 /** 读取屏幕尺寸与安全区(dp)。任何环节失败都不阻断,回退为 0。 */
 async function collectScreenMetrics(context: common.UIAbilityContext): Promise<ScreenMetrics> {
   const metrics: ScreenMetrics = {
@@ -99,14 +163,25 @@ async function collectScreenMetrics(context: common.UIAbilityContext): Promise<S
   }
   try {
     const win: window.Window = await window.getLastWindow(context);
-    const sysArea: window.AvoidArea = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM);
-    metrics.statusBarHeight = px2dp(sysArea.topRect.height, density);
+    // 状态栏:轮询等就绪(见 resolveStatusBarHeightPx 注释),保证首次调用就返回正确高度。
+    const statusTopPx: number = await resolveStatusBarHeightPx(win, density);
+    // 导航条:读一次即可,拿不到就用缓存(手势导航隐藏时本就可能为 0)。
     const navArea: window.AvoidArea = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR);
-    metrics.navBarHeight = px2dp(navArea.bottomRect.height, density);
+    let navBottomPx: number = navArea.bottomRect.height;
+    if (navBottomPx > 0) {
+      SafeAreaHolder.updateNavBarHeightPx(navBottomPx);
+    } else {
+      navBottomPx = SafeAreaHolder.getNavBarHeightPx();
+    }
+    metrics.statusBarHeight = px2dp(statusTopPx, density);
+    metrics.navBarHeight = px2dp(navBottomPx, density);
     // Android 的 bottomSafeHeight 取的是刘海屏底部留白,鸿蒙用导航条避让区等价表达。
     metrics.bottomSafeHeight = metrics.navBarHeight;
   } catch (e) {
-    // 窗口未就绪(如尚未 loadContent)时保持 0。
+    // 窗口未就绪(如尚未 loadContent)时:退到缓存值,仍拿不到才保持 0。
+    metrics.statusBarHeight = px2dp(SafeAreaHolder.getStatusBarHeightPx(), density);
+    metrics.navBarHeight = px2dp(SafeAreaHolder.getNavBarHeightPx(), density);
+    metrics.bottomSafeHeight = metrics.navBarHeight;
   }
   return metrics;
 }

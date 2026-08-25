@@ -75,7 +75,34 @@ ohpm publish qx_hybrid/build/default/outputs/default/qx-hybrid.har
 
 > 若用到 `openMap` 唤起第三方地图,集成方需在自己入口模块的 `module.json5` 声明 `querySchemes: ["petalmaps","androidamap","baidumap","qqmap"]`(参考 `entry` 模块)。
 
-页面中:
+### 接入方式一:零承载页(命名路由,**推荐**)
+
+承载页由 SDK 提供(`QXWebPage`),生命周期与系统返回键全在 SDK 内处理,宿主**不用写承载页、不用写 `onBackPress`**。只需两步:
+
+```typescript
+// ① App 启动时(如 EntryAbility.onCreate)登记一次业务能力
+import { QXWebRegistry } from 'qx-hybrid';
+
+QXWebRegistry.configure({
+  // 每次进页面时取当前登录态,拼 getUserInfo / getToken / openPage 的返回
+  hostBridgeDelegateProvider: () => new MyHostBridgeDelegate()
+  // scanHandler / immersive / statusBarContentColor 可选
+});
+```
+
+```typescript
+// ② 任意位置打开 H5:直接命名路由,无需在 main_pages.json 登记
+import { router } from '@kit.ArkUI';
+import { QX_WEB_PAGE_ROUTE_NAME } from 'qx-hybrid';   // = 'QXWebPage'
+
+router.pushNamedRoute({ name: QX_WEB_PAGE_ROUTE_NAME, params: { url: 'https://your-h5/index.html' } });
+```
+
+> ⚠️ 系统返回键要「H5 逐级后退」而非退整个 WebView —— 用本方式**天然生效**,这也是修复「别的宿主系统返回键退整个 web」的推荐路径。
+
+### 接入方式二:嵌入式(自写承载页)
+
+需要把 H5 塞进宿主自己的页面 / tab / 布局时用。**注意 ArkUI 的 `onBackPress()`/`onPageShow()`/`onPageHide()` 只在 `@Entry` 上触发**,承载页必须逐一转调,否则:漏 `onPageShow` → H5 收不到生命周期;漏 `onBackPress` → 系统返回键一次性退整个 WebView。
 
 ```typescript
 import { QXWebView, QXWebViewController, QXHostDelegate } from 'qx-hybrid';
@@ -83,12 +110,12 @@ import { QXWebView, QXWebViewController, QXHostDelegate } from 'qx-hybrid';
 @Entry
 @Component
 struct ChargePage {
-  // onPageShow/onPageHide 只在 @Entry 上触发,需经 controller 转给 QXWebView,
-  // H5 才能收到 pageShow / pageHide 生命周期事件。
   private webController: QXWebViewController = new QXWebViewController();
 
   onPageShow(): void { this.webController.onPageShow(); }
   onPageHide(): void { this.webController.onPageHide(); }
+  // 不加这行,系统返回键会一次性关掉整个 WebView,而非 H5 逐级后退。
+  onBackPress(): boolean { return this.webController.onBackPress(); }
 
   build() {
     QXWebView({

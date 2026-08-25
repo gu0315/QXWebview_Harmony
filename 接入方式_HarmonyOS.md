@@ -63,34 +63,26 @@ DevEco Studio 5.0+ · compatibleSdkVersion `5.0.0(12)`
 
 > 定位、蓝牙、相机是 user_grant 权限,SDK 会在 `QXWebView` 加载时自动向用户申请弹窗。
 
-## 使用方式
+## 使用方式(推荐:命名路由,零承载页)
 
-**使用内置的 `QXWebView` 组件:**
+承载页由 SDK 提供,生命周期与系统返回键都内置处理,宿主只需两步:
 
 ```typescript
-import { QXWebView, QXHostDelegate, QXHostBridgeDelegate } from 'qx-hybrid';
-
-@Entry
-@Component
-struct ChargePage {
-  // 页面级代理(返回/关闭/新开页/导航栏)
-  private delegate: MyHostDelegate = new MyHostDelegate();
-  // 宿主桥代理(登录/用户信息/token 等自定义方法)
-  private hostBridgeDelegate: MyHostBridgeDelegate = new MyHostBridgeDelegate();
-
-  build() {
-    Column() {
-      QXWebView({
-        url: 'https://fr-home-charge-web.cheryge.com',
-        delegate: this.delegate,
-        hostBridgeDelegate: this.hostBridgeDelegate
-      })
-    }
-    .width('100%')
-    .height('100%')
-  }
-}
+// ① App 启动时(如 EntryAbility.onCreate)登记一次
+import { QXWebRegistry } from 'qx-hybrid';
+QXWebRegistry.configure({ hostBridgeDelegateProvider: () => new MyHostBridgeDelegate() });
 ```
+
+```typescript
+// ② 打开 H5
+import { router } from '@kit.ArkUI';
+import { QX_WEB_PAGE_ROUTE_NAME } from 'qx-hybrid';
+router.pushNamedRoute({ name: QX_WEB_PAGE_ROUTE_NAME, params: { url: 'https://fr-home-charge-web.cheryge.com' } });
+```
+
+`MyHostBridgeDelegate` 写法见下方「① 宿主桥代理」。返回/关闭/新开页已内置,无需写 `QXHostDelegate`。
+
+> 若必须把 H5 嵌进自己的页面(自写 `@Entry` 承载页),则要多做一步:持有 `QXWebViewController` 并在 `onPageShow/onPageHide/onBackPress` 里转调,再把它传给 `QXWebView`。**漏了 `onBackPress`,系统返回键会退掉整个 WebView 而非 H5 逐级后退。**
 
 # FR 宿主 APP 容器需实现以下方法(解偶方案)
 
@@ -178,18 +170,22 @@ export class MyHostBridgeDelegate implements QXHostBridgeDelegate {
 
 ### ② 页面代理:返回 / 关闭 / 新开页 / 导航栏
 
+> 仅**方式二(嵌入式)**需要。方式一(命名路由)已内置默认实现,可跳过本段。
+>
+> 注意接口方法名与类型(照抄即可):没有 `onGoBack`;导航栏枚举是 **`QXNavigationBarStyle`**(不是 `NavigationBarStyle`);`onCloseWithResult` 的参数类型是 **`Object`**(大写)。返回键的「有历史就后退、到根才关页」由 SDK 内部处理,`goBack` 到根时会回调 `onCloseWebView`。
+
 ```typescript
 import { router } from '@kit.ArkUI';
-import { QXHostDelegate, OpenWebViewOptions, NavigationBarStyle } from 'qx-hybrid';
+import { QXHostDelegate, OpenWebViewOptions, QXNavigationBarStyle } from 'qx-hybrid';
 
 export class MyHostDelegate implements QXHostDelegate {
-  onGoBack(): void { router.back(); }
   onCloseWebView(): void { router.back(); }
-  onCloseWithResult(result: object): void { router.back(); }
+  onCloseWithResult(result: Object): void { router.back(); }
   onOpenWebView(options: OpenWebViewOptions): void {
     router.pushUrl({ url: 'pages/ChargePage', params: options });
   }
-  onSetNavigationBarStyle(style: NavigationBarStyle): void { /* 按需设置导航栏 */ }
+  onSetNavigationBarStyle(style: QXNavigationBarStyle): void { /* 按需设置导航栏 */ }
+  // onFirstRender?(): void {}  // 可选,H5 首屏渲染完成回调
 }
 ```
 

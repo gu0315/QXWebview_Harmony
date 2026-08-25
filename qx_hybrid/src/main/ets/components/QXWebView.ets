@@ -21,6 +21,7 @@ import { QXHostDelegate, QXHostBridgeDelegate } from '../bridge/HostDelegate';
 import { PageResultCenter } from '../bridge/PageResultCenter';
 import { QXWebViewController } from './QXWebViewController';
 import { StorageUtil } from '../utils/StorageUtil';
+import { SafeAreaHolder } from '../utils/SafeAreaHolder';
 import { QXWebDebug } from '../utils/WebDebug';
 import { QXBasePlugin } from '../plugins/QXBasePlugin';
 import { QXBlePlugin } from '../plugins/QXBlePlugin';
@@ -92,6 +93,10 @@ export struct QXWebView {
   private lifecyclePlugin: QXLifecyclePlugin = new QXLifecyclePlugin();
   private storage: StorageUtil = new StorageUtil();
   private abilityContext: common.UIAbilityContext | null = null;
+  /** 沉浸式下持有的窗口,用于注册/注销安全区变化监听。 */
+  private immersiveWindow: window.Window | null = null;
+  /** avoidAreaChange 回调引用,aboutToDisappear 时 off 掉。 */
+  private avoidAreaListener: ((data: window.AvoidAreaOptions) => void) | null = null;
 
   aboutToAppear(): void {
     const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
@@ -105,6 +110,9 @@ export struct QXWebView {
     // 必须在运行时向用户申请,否则 H5 调 location/BLE/扫码会失败。
     this.requestRuntimePermissions(context);
 
+    // 登记沉浸式状态:SystemInfoPlugin 只在沉浸式下才对「测不到状态栏高度」做兜底垫高,
+    // 非沉浸式时系统已自动避让,statusBarHeight=0 是正确值,兜底反而会多垫一条空白。
+    SafeAreaHolder.setImmersive(this.immersive);
     if (this.immersive) {
       this.applyImmersiveLayout(context);
     }
@@ -116,7 +124,9 @@ export struct QXWebView {
     this.bridge = bridge;
     this.lifecyclePlugin.attachHost(host);
     this.lifecyclePlugin.setUrl(this.url);
-    this.webController?.attach(this.lifecyclePlugin);
+    // 把生命周期插件和桥宿主一起交给控制器:承载页 onPageShow/onPageHide 转调生命周期,
+    // onBackPress 通过 host 拿到 WebviewController 做 H5 逐级后退。
+    this.webController?.attach(this.lifecyclePlugin, host);
 
     // 注册插件(与 Android QXBridgePluginRegister.registerAllPlugins 对齐)。
     const basePlugin: QXBasePlugin =
@@ -142,17 +152,45 @@ export struct QXWebView {
    */
   private applyImmersiveLayout(context: common.UIAbilityContext): void {
     window.getLastWindow(context).then((win: window.Window): void => {
-      win.setWindowLayoutFullScreen(true).catch((e: BusinessError): void => {
-        console.error('QXWebView setWindowLayoutFullScreen failed: ' + e?.message);
+      this.immersiveWindow = win;
+      win.setWindowLayoutFullScreen(true).then((): void => {
+        // 全屏生效后避让区才稳定:立即把状态栏 / 导航条高度写入缓存,
+        // 让随后(哪怕深链首屏)的 getSystemInfo 一定能拿到非 0 的 statusBarHeight。
+        console.info('[QXSafeArea] 沉浸式全屏已生效');
+        this.cacheSafeArea(win);
+      }).catch((e: BusinessError): void => {
+        // 全屏失败 = 窗口一直不铺到状态栏下 = 避让区会恒为 0,状态栏高度只能走兜底。
+        console.error('[QXSafeArea] setWindowLayoutFullScreen 失败(避让区将恒为 0): ' + e?.message);
       });
       win.setWindowSystemBarProperties({
         statusBarContentColor: this.statusBarContentColor
       }).catch((e: BusinessError): void => {
         console.error('QXWebView setWindowSystemBarProperties failed: ' + e?.message);
       });
+      // 旋转 / 状态栏显隐等会改变避让区,持续刷新缓存。
+      this.avoidAreaListener = (): void => this.cacheSafeArea(win);
+      try {
+        win.on('avoidAreaChange', this.avoidAreaListener);
+      } catch (e) {
+        // 个别版本不支持该事件时忽略,已有全屏后的一次性缓存兜底。
+      }
     }).catch((e: BusinessError): void => {
       console.error('QXWebView getLastWindow failed: ' + e?.message);
     });
+  }
+
+  /** 读取当前窗口的状态栏 / 底部导航条避让高度(px),写入进程内缓存。 */
+  private cacheSafeArea(win: window.Window): void {
+    try {
+      const sysArea: window.AvoidArea = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM);
+      console.info(`[QXSafeArea] 采集到状态栏避让高度 ${sysArea.topRect.height}px`);
+      SafeAreaHolder.updateStatusBarHeightPx(sysArea.topRect.height);
+      const navArea: window.AvoidArea =
+        win.getWindowAvoidArea(window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR);
+      SafeAreaHolder.updateNavBarHeightPx(navArea.bottomRect.height);
+    } catch (e) {
+      // 窗口尚未就绪,跳过本次采集。
+    }
   }
 
   /** 运行时申请定位/蓝牙/相机权限。首次加载时弹窗;已授权则静默返回。 */
@@ -174,6 +212,17 @@ export struct QXWebView {
   }
 
   aboutToDisappear(): void {
+    // 注销安全区监听,避免页面销毁后回调悬挂。
+    if (this.immersiveWindow && this.avoidAreaListener) {
+      try {
+        this.immersiveWindow.off('avoidAreaChange', this.avoidAreaListener);
+      } catch (e) {
+        // 忽略注销异常。
+      }
+    }
+    this.avoidAreaListener = null;
+    this.immersiveWindow = null;
+
     this.lifecyclePlugin.notifyState('pageDestroy', 'aboutToDisappear');
     // 本页是被 forResult 打开的、且没主动 closeWithResult:回 {cancelled:true} 兜底,
     // 对应 Android QXWebViewActivity.onDestroy 里的 PageResultCenter.cancel。
