@@ -73,7 +73,7 @@ ohpm publish qx_hybrid/build/default/outputs/default/qx-hybrid.har
 }
 ```
 
-> 若用到 `openMap` 唤起第三方地图,集成方需在自己入口模块的 `module.json5` 声明 `querySchemes: ["petalmaps","androidamap","baidumap","qqmap"]`(参考 `entry` 模块)。
+> 若用到 `openMap` 唤起第三方地图,集成方需在自己入口模块的 `module.json5` 声明 `querySchemes: ["geo","petalmaps","amapuri","androidamap","baidumap","qqmap"]`(鸿蒙版高德是 `amapuri`,花瓣用 `geo:` 唤起、`petalmaps` 探测,参考 `entry` 模块)。
 
 ### 接入方式一:零承载页(命名路由,**推荐**)
 
@@ -138,9 +138,9 @@ struct ChargePage {
 | QXBasePlugin | scanQRCode | ✅ 已实现(真机) | Scan Kit `startScanForResult`;可用 scanHandler 覆盖 |
 | QXBasePlugin | chooseImage | ✅ 已实现(真机) | PhotoViewPicker;可用 chooseImageHandler 覆盖 |
 | QXBasePlugin | downloadAndOpenFile | ✅ 已实现(真机) | NetworkKit 下载 + startAbility 打开 |
-| QXBasePlugin | openMap | ✅ 已实现 | URI 与 Android OpenMapAppUtils 逐字对齐;未装则走网页版;需集成方声明 querySchemes |
+| QXBasePlugin | openMap | ✅ 已实现 | 不传 `app` 弹「选择地图导航」面板(对齐 Android showMapSelectSheet),传 `app` 则直接唤起;未装则走网页版;需集成方声明 querySchemes。候选为高德/百度/腾讯,面板是自绘 ActionSheet(openCustomDialog)。**scheme 以真机 `bm dump` 为准,勿照抄 Android**:鸿蒙版高德是 `amapuri`(Android 为 `androidamap`);百度是 `baidumap://map/...`,host 必须带上,否则 `canOpenLink` 判成没装;腾讯鸿蒙版包名是 `com.tencent.mapohos`,必须用 `qqmap://map/routeplan`(Android 的 `map/marker` 在鸿蒙版没有对应路由,会显示「网络异常」);华为花瓣只认标准 `geo:`,且停在 POI 卡片需再点「路线」。**唤起一律锁 `bundleName`**,否则 scheme 会被别的 App 接管 |
 | QXBlePlugin | 权限 / 适配器状态 / 扫描 | ✅ 已实现 | 真机验证 |
-| QXBlePlugin | 连接 / 服务 / 特征 / 写 / notify / MTU | 🟡 已按官方 API 接线 | **必须真机 + 充电桩联调**;连接状态经 `onBLEConnectionStateChange` 事件广播 |
+| QXBlePlugin | 连接 / 服务 / 特征 / 写 / notify / MTU | ✅ 已实现(真机 + 充电桩验证) | 连接状态经 `onBLEConnectionStateChange` 事件广播。**GATT 写按 deviceId 串行化**:鸿蒙不排队并发写,上一次写未回 WriteComplete 时再写会返回 2900099,H5 会据此判链路失效并拆连接 |
 | QXHostBridgePlugin | openPage / 宿主自定义方法 | ✅ | 转 QXHostBridgeDelegate,回裸数据 |
 | QXLifecyclePlugin | subscribePageLifecycle / unsubscribePageLifecycle / getPageLifecycleState | ✅ | 事件走 callJS;承载页需转调 `QXWebViewController` |
 | SystemInfoPlugin | getSystemInfo / getDeviceInfo | ✅ | |

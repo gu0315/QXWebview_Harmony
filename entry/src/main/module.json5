@@ -11,8 +11,14 @@
     // openMap 检测第三方地图是否安装(bundleManager.canOpenLink)所需。
     // 集成方需在自己的入口模块声明相同 querySchemes。
     "querySchemes": [
+      // 华为花瓣:用 geo: 唤起(它自己的 maps://navigation 进不了导航),
+      // 但 geo: 是 opaque URI 匹配不上 skill,所以「是否已安装」靠 petalmaps 探测。
+      "geo",
       "petalmaps",
-      // 高德用 androidamap://navi(与 Android OpenMapAppUtils 同一套 URI)
+      // 鸿蒙版高德(com.amap.hmapp)注册的是 amapuri,不是 Android 版的 androidamap。
+      // 真机 `bm dump -n com.amap.hmapp` 可核对。androidamap 一并保留,兼容装了
+      // Android 兼容版高德的设备。
+      "amapuri",
       "androidamap",
       "baidumap",
       "qqmap",

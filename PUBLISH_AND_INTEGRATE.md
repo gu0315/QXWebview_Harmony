@@ -110,7 +110,7 @@ ohpm publish qx_hybrid/build/default/outputs/default/qx-hybrid.har
 | 能力 | 集成方需做 |
 |---|---|
 | 定位 / 蓝牙 / 相机 | 在自己 `module.json5` 声明对应 `requestPermissions`(HAR 的权限声明不会自动合并到宿主,需宿主再声明一遍) |
-| `openMap` 唤起第三方地图 | 声明 `querySchemes: ["petalmaps","amapuri","baidumap","qqmap"]` |
+| `openMap` 唤起第三方地图 | 声明 `querySchemes: ["geo","petalmaps","amapuri","androidamap","baidumap","qqmap"]`(鸿蒙版高德是 `amapuri`,花瓣用 `geo:` 唤起、`petalmaps` 探测) |
 | 宿主 UI(返回/关闭/新开页/导航栏) | 实现 `QXHostDelegate` 传给 `QXWebView` |
 | 扫码 / 选图 | 默认走 Scan Kit / PhotoPicker;如需自定义,注入 `scanHandler` |
 

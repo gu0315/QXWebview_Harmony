@@ -52,7 +52,8 @@ window.addEventListener('onPageLifecycle', (e) => {
 | 12 | `callNative('QXBasePlugin','scanQRCode')` | `{result:'<二维码内容>', scanType}` |
 | 13 | `callNative('QXBasePlugin','chooseImage',{count:1})` | `{paths:['file://...'], tempFilePaths:[...]}` |
 | 14 | `callNative('QXBasePlugin','downloadAndOpenFile',{url:'https://.../a.pdf'})` | `{path:'.../a.pdf'}` |
-| 15 | `callNative('QXBasePlugin','openMap',{latitude:31.2,longitude:121.4,name:'目的地',app:'amap'})` | `{uri}`;`app` 可省(自动择优) |
+| 15 | `callNative('QXBasePlugin','openMap',{latitude:31.2,longitude:121.4,name:'目的地',app:'amap'})` | `{uri}`;传 `app` 直接唤起该地图 |
+| 15b | `callNative('QXBasePlugin','openMap',{latitude:31.2,longitude:121.4,name:'目的地'})` | 省略 `app` 弹「选择地图导航」面板;取消回 `cancelled` |
 
 ## 三、蓝牙(必须纯血真机 + 充电桩)
 

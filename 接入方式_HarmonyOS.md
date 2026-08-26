@@ -29,7 +29,7 @@ DevEco Studio 5.0+ · compatibleSdkVersion `5.0.0(12)`
 {
   "module": {
     // openMap 唤起第三方地图需要(canOpenLink 检测)
-    "querySchemes": ["petalmaps", "androidamap", "baidumap", "qqmap"],
+    "querySchemes": ["geo", "petalmaps", "amapuri", "androidamap", "baidumap", "qqmap"],
 
     "requestPermissions": [
       { "name": "ohos.permission.INTERNET" },

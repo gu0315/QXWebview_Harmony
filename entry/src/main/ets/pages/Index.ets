@@ -20,7 +20,7 @@ struct Index {
   @State phone: string = '13917634726';
   @State vin: string = '';
   @State mac: string = '';
-  @State url: string =  'https://fr-home-charge-web.cheryge.com';
+  @State url: string =  'https://fr-charge-web.cheryge.com';
   @State token: string = '';
 
   build() {
