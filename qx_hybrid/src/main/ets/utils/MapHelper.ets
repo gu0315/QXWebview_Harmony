@@ -25,6 +25,7 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { window, promptAction, ComponentContent } from '@kit.ArkUI';
 import { BridgeCallback } from '../bridge/BridgeTypes';
 import { QXBridgeError } from '../bridge/QXBridgeError';
+import { QXUIContextHolder } from './UIContextHolder';
 
 export type MapApp = 'amap' | 'baidu' | 'tencent' | 'petal' | 'system';
 
@@ -254,13 +255,21 @@ export class MapHelper {
   /**
    * 弹「选择地图导航」面板。用户取消回 cancelled,与其它取消类能力的约定一致。
    *
-   * 弹窗要走 UIContext,而这里是 HAR 里的静态工具类,拿不到组件上下文,
-   * 只能从 getLastWindow 反查。这条路在某些时机(窗口未就绪/多窗口)会失败,
-   * 失败时**不能**静默回退成直接唤起 —— 那正是「点了导航但没弹面板」的样子,
-   * 排查起来毫无线索。所以这里两条路都试,并把每一步都打进日志。
+   * UIContext 优先取 QXWebView 登记的那份(见 QXUIContextHolder)。
+   * **不要**退回 `window.getLastWindow` 作为首选:宿主 App 常有多个窗口,
+   * 它拿到的未必是当前前台那个,弹窗会挂到看不见的窗口上 —— 不报错、不回调,
+   * 用户点了「毫无反应」,日志停在最后一条正常输出,极难定位(真机踩过)。
    */
   private static pick(context: common.UIAbilityContext, list: MapCandidate[],
     callback: BridgeCallback): void {
+    const held: UIContext | null = QXUIContextHolder.get();
+    if (held) {
+      MapHelper.log('使用 QXWebView 登记的 UIContext 弹面板');
+      MapHelper.showSheet(context, held, list, callback);
+      return;
+    }
+    // 没有 QXWebView 在场(理论上不该发生)时才反查窗口。
+    MapHelper.log('未登记 UIContext,回退 getLastWindow 反查');
     window.getLastWindow(context).then((win: window.Window): void => {
       let ui: UIContext;
       try {
@@ -270,7 +279,15 @@ export class MapHelper {
           `getUIContext 抛异常: ${(err as BusinessError).message}`);
         return;
       }
+      MapHelper.showSheet(context, ui, list, callback);
+    }).catch((e: BusinessError): void =>
+      MapHelper.fallbackMenu(context, list, callback, `getLastWindow 失败: ${e.message}`));
+  }
 
+  /** 在给定 UIContext 上弹面板。 */
+  private static showSheet(context: common.UIAbilityContext, ui: UIContext,
+    list: MapCandidate[], callback: BridgeCallback): void {
+    {
       // 选中/取消后都要自己关掉自定义弹窗,系统不会代劳。
       let content: ComponentContent<MapPickerModel> | null = null;
       const dismiss = (): void => {
@@ -331,13 +348,13 @@ export class MapHelper {
           `构建面板节点失败: ${(err as BusinessError).message}`);
         return;
       }
+      MapHelper.log('打开面板');
       ui.getPromptAction().openCustomDialog(content, options)
         .catch((e: BusinessError): void => {
           content = null;
           MapHelper.fallbackMenu(context, list, callback, `openCustomDialog 失败: ${e.message}`);
         });
-    }).catch((e: BusinessError): void =>
-      MapHelper.fallbackMenu(context, list, callback, `getLastWindow 失败: ${e.message}`));
+    }
   }
 
   /**

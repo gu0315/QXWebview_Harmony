@@ -23,6 +23,7 @@ import { QXWebViewController } from './QXWebViewController';
 import { StorageUtil } from '../utils/StorageUtil';
 import { SafeAreaHolder } from '../utils/SafeAreaHolder';
 import { QXWebDebug } from '../utils/WebDebug';
+import { QXUIContextHolder } from '../utils/UIContextHolder';
 import { QXBasePlugin } from '../plugins/QXBasePlugin';
 import { QXBlePlugin } from '../plugins/QXBlePlugin';
 import { QXLifecyclePlugin } from '../plugins/QXLifecyclePlugin';
@@ -97,10 +98,18 @@ export struct QXWebView {
   private immersiveWindow: window.Window | null = null;
   /** avoidAreaChange 回调引用,aboutToDisappear 时 off 掉。 */
   private avoidAreaListener: ((data: window.AvoidAreaOptions) => void) | null = null;
+  /** 本组件所在的 UIContext,登记到 QXUIContextHolder 供工具类弹窗用。 */
+  private uiContext: UIContext | null = null;
 
   aboutToAppear(): void {
     const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
     this.abilityContext = context;
+
+    // 存下本组件的 UIContext,供 SDK 内需要弹系统对话框的工具类使用。
+    // 不能让它们去 getLastWindow 反查 —— 宿主 App 多窗口时会拿错窗口,
+    // 弹窗挂到看不见的地方,表现为「点了没反应」且无任何报错。
+    this.uiContext = this.getUIContext();
+    QXUIContextHolder.set(this.uiContext);
 
     // H5 调试开关。必须赶在下面 build() 创建 Web 组件之前,所以放在 aboutToAppear 最前面。
     // 默认 debug 包开、release 包关,集成方不用在自己的 UIAbility 里写任何代码。
@@ -151,7 +160,9 @@ export struct QXWebView {
    * 只影响窗口属性,不改宿主的原生页面 —— 原生页未声明 expandSafeArea,仍由系统自动避让。
    */
   private applyImmersiveLayout(context: common.UIAbilityContext): void {
-    window.getLastWindow(context).then((win: window.Window): void => {
+    // 取本组件所在的窗口。不能用 getLastWindow:宿主挂了悬浮窗时它返回的是悬浮窗,
+    // 沉浸式会设到那个小窗上,页面这边毫无变化,安全区也跟着量错。
+    QXUIContextHolder.getWindow(context).then((win: window.Window): void => {
       this.immersiveWindow = win;
       win.setWindowLayoutFullScreen(true).then((): void => {
         // 全屏生效后避让区才稳定:立即把状态栏 / 导航条高度写入缓存,
@@ -175,7 +186,7 @@ export struct QXWebView {
         // 个别版本不支持该事件时忽略,已有全屏后的一次性缓存兜底。
       }
     }).catch((e: BusinessError): void => {
-      console.error('QXWebView getLastWindow failed: ' + e?.message);
+      console.error('QXWebView 取窗口失败: ' + e?.message);
     });
   }
 
@@ -222,6 +233,10 @@ export struct QXWebView {
     }
     this.avoidAreaListener = null;
     this.immersiveWindow = null;
+
+    // 只清掉自己登记的那份,若期间已有新的 QXWebView 登记则不动。
+    QXUIContextHolder.clear(this.uiContext);
+    this.uiContext = null;
 
     this.lifecyclePlugin.notifyState('pageDestroy', 'aboutToDisappear');
     // 本页是被 forResult 打开的、且没主动 closeWithResult:回 {cancelled:true} 兜底,

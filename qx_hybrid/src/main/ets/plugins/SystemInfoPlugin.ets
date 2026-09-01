@@ -13,6 +13,7 @@ import { BasePlugin } from '../bridge/BridgePlugin';
 import { BridgeCallback, BridgeHost } from '../bridge/BridgeTypes';
 import { QXBridgeError } from '../bridge/QXBridgeError';
 import { SafeAreaHolder } from '../utils/SafeAreaHolder';
+import { QXUIContextHolder } from '../utils/UIContextHolder';
 import deviceInfo from '@ohos.deviceInfo';
 import { display, window } from '@kit.ArkUI';
 import { bundleManager, common } from '@kit.AbilityKit';
@@ -162,7 +163,9 @@ async function collectScreenMetrics(context: common.UIAbilityContext): Promise<S
     // 取不到屏幕信息时保持 0。
   }
   try {
-    const win: window.Window = await window.getLastWindow(context);
+    // 用 QXWebView 所在的窗口,不能用 getLastWindow:宿主挂了悬浮窗时会量到悬浮窗,
+    // 状态栏/导航条高度全错(真机上宿主有个 141x141 的 TestOverlayWindow)。
+    const win: window.Window = await QXUIContextHolder.getWindow(context);
     // 状态栏:轮询等就绪(见 resolveStatusBarHeightPx 注释),保证首次调用就返回正确高度。
     const statusTopPx: number = await resolveStatusBarHeightPx(win, density);
     // 导航条:读一次即可,拿不到就用缓存(手势导航隐藏时本就可能为 0)。
